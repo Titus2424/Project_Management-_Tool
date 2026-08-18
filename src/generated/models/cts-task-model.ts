@@ -52,6 +52,10 @@ export interface CTSTask {
    */
   statusKey?: CTSTaskStatusKey;
   /**
+   * @displayName Is Active
+   */
+  isActive?: boolean;
+  /**
    * @displayName Task Description
    */
   taskDescription?: string;

@@ -41,19 +41,21 @@ const CurrentUserRoleContext = createContext<CurrentUserRoleContextValue | undef
 
 const normalizeIdentity = (value: string | undefined): string => (value ?? '').trim().toLowerCase();
 
-const getBooleanField = (record: SystemUser, keys: string[]): boolean => {
-  const values = record as unknown as Record<string, unknown>;
-  return keys.some((key: string) => values[key] === true || values[key] === 'true' || values[key] === 'Yes');
-};
-
+// The System User Dataverse table has no permission columns; permissions are derived from Role.
 const getPermissionsFromSystemUser = (record: SystemUser | undefined): CurrentUserPermissions => {
   if (!record) return defaultPermissions;
-  return {
-    createProjects: getBooleanField(record, ['createProjects', 'create_projects', 'canCreateProjects', 'can_create_projects', 'dmeo_createprojects']),
-    assignTasks: getBooleanField(record, ['assignTasks', 'assign_tasks', 'canAssignTasks', 'can_assign_tasks', 'dmeo_assigntasks']),
-    uploadDocuments: getBooleanField(record, ['uploadDocuments', 'upload_documents', 'canUploadDocuments', 'can_upload_documents', 'dmeo_uploaddocuments']),
-    reviewApprovals: getBooleanField(record, ['reviewApprovals', 'review_approvals', 'canReviewApprovals', 'can_review_approvals', 'dmeo_reviewapprovals']),
-  };
+  switch (record.roleKey) {
+    case 'Admin':
+      return { createProjects: true, assignTasks: true, uploadDocuments: true, reviewApprovals: true };
+    case 'ProjectManager':
+      return { createProjects: true, assignTasks: true, uploadDocuments: true, reviewApprovals: false };
+    case 'Approver':
+      return { createProjects: false, assignTasks: false, uploadDocuments: false, reviewApprovals: true };
+    case 'Employee':
+      return { createProjects: false, assignTasks: false, uploadDocuments: true, reviewApprovals: false };
+    default:
+      return defaultPermissions;
+  }
 };
 
 const getRoleLabel = (record: SystemUser | undefined): string | undefined => {

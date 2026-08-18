@@ -46,9 +46,9 @@ export interface ChoiceOption {
  * The CLI-generated dataSourcesInfo.ts is the source of truth after the
  * SharePoint library is added to the Code App.
  */
-export const SHAREPOINT_LIBRARY_NAME = "<SET_LIBRARY_NAME>";
+export const SHAREPOINT_LIBRARY_NAME = "ProjectDocuments";
 export const SHAREPOINT_SITE_URL =
-  "https://<tenant>.sharepoint.com/sites/<site>";
+  "https://myui.sharepoint.com/sites/Trial_Site";
 
 export const MAX_FILE_SIZE_MB = 4;
 export const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;

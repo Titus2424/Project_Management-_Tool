@@ -12,6 +12,8 @@ export const CTSProjectSchema = z.object({
   progress: z.number().int().optional(),
   projectCode: z.string().min(1, { message: "Project Code is required" }),
   projectManager: z.object({ id: z.string().uuid(), fullName: z.string() }).optional(),
+  projectManagerEmail: z.string().optional(),
+  isActive: z.boolean().optional(),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").optional(),
   statusKey: z.enum(['Planning', 'Active', 'OnHold', 'Completed', 'Cancelled']).optional(),
 });

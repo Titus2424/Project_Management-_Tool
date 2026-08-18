@@ -11,6 +11,7 @@ export const CTSDocumentApprovalSchema = z.object({
   decisionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, "DateTime must be in ISO format").optional(),
   decisionKey: z.enum(['Pending', 'Approved', 'Rejected']).optional(),
   document: z.object({ id: z.string().uuid(), documentName: z.string() }).optional(),
+  isActive: z.boolean().optional(),
 });
 
 /**

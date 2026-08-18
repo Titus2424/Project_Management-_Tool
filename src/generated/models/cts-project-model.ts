@@ -48,6 +48,14 @@ export interface CTSProject {
    */
   projectManager?: Pick<SystemUser, 'id' | 'fullName'>;
   /**
+   * @displayName ProjectManagerEmail
+   */
+  projectManagerEmail?: string;
+  /**
+   * @displayName Is Active
+   */
+  isActive?: boolean;
+  /**
    * @displayName Start Date
    */
   startDate?: string;

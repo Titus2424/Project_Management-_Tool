@@ -50,6 +50,10 @@ export interface CTSDocument {
    */
   statusKey?: CTSDocumentStatusKey;
   /**
+   * @displayName Is Active
+   */
+  isActive?: boolean;
+  /**
    * @displayName Task
    */
   task?: Pick<CTSTask, 'id' | 'taskName'>;

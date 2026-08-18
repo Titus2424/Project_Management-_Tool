@@ -12,6 +12,7 @@ export const CTSDocumentSchema = z.object({
   project: z.object({ id: z.string().uuid(), projectName: z.string() }).optional(),
   sharePointFileID: z.string().min(1, { message: "SharePoint File ID is required" }),
   statusKey: z.enum(['Draft', 'Submitted', 'Approved', 'Rejected', 'RevisionRequired']).optional(),
+  isActive: z.boolean().optional(),
   task: z.object({ id: z.string().uuid(), taskName: z.string() }).optional(),
   uploadedBy: z.object({ id: z.string().uuid(), fullName: z.string() }).optional(),
   uploadedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, "DateTime must be in ISO format").optional(),

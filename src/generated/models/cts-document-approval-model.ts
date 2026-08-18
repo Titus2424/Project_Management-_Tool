@@ -41,6 +41,10 @@ export interface CTSDocumentApproval {
    * @displayName Document
    */
   document?: Pick<CTSDocument, 'id' | 'documentName'>;
+  /**
+   * @displayName Is Active
+   */
+  isActive?: boolean;
 }
 
 export const _CTSDocumentApproval = 'CTSDocumentApproval' as const;

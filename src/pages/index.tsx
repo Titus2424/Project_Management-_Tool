@@ -40,28 +40,18 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Switch } from '@/components/ui/switch';
 
-const navItems = ['Dashboard', 'Projects', 'Project Workspace', 'Tasks', 'My Tasks', 'Documents', 'Upload Document', 'Approval Center', 'Inactive Records', 'Access Management'] as const;
+const navItems = ['Dashboard', 'Projects', 'Project Workspace', 'Tasks', 'My Tasks', 'Documents', 'Upload Document', 'Approval Center', 'Inactive Records', 'Access Management', 'Data Repair'] as const;
 type Screen = (typeof navItems)[number];
-type Status = 'Planning' | 'Active' | 'On Hold' | 'Completed' | 'Cancelled' | 'Archived' | 'Draft' | 'Submitted' | 'Approved' | 'Rejected' | 'Revision Required' | 'Not Started' | 'In Progress' | 'Pending';
+type Status = 'Planning' | 'Active' | 'On Hold' | 'Completed' | 'Cancelled' | 'Draft' | 'Submitted' | 'Approved' | 'Rejected' | 'Revision Required' | 'Not Started' | 'In Progress' | 'Pending';
 type Priority = 'Low' | 'Medium' | 'High' | 'Critical';
 type IsActiveValue = 'Active' | 'Inactive';
 type Role = 'Admin' | 'Project Manager' | 'Employee' | 'Approver';
-type Project = { id: string; name: string; code?: string; manager: string; managerId: string; status: Status; progress: number; location: string; start: string; end: string; description: string; isActive: boolean };
+type Project = { id: string; name: string; code?: string; manager: string; managerId: string; managerEmail: string; status: Status; progress: number; location: string; start: string; end: string; description: string; isActive: boolean };
 type Task = { id: string; name: string; taskCode: string; project: string; projectId: string; assignedTo: string; assignedToId: string; assignedToEmail: string; dueDate: string; status: Status; priority: Priority; description: string; isActive: boolean };
 type Doc = { id: string; name: string; documentCode: string; version: string; project: string; projectId: string; task: string; taskId: string; uploadedBy: string; date: string; status: Status; size: string; url: string; comments: string; isActive: boolean };
 type ManagedUser = { id: string; fullName: string; email: string; isActive: boolean; role: Role; userLookupName: string; userLookupId: string };
 type Approval = { id: string; name: string; documentId: string; documentName: string; approver: string; decision: Status; decisionDate: string; comments: string; isActive: boolean };
 type DataverseUserOption = { id: string; fullName: string; email?: string; lookup: { id: string; fullName: string } };
-type SystemUserPermissionFields = {
-  createProjects?: boolean;
-  assignTasks?: boolean;
-  uploadDocuments?: boolean;
-  reviewApprovals?: boolean;
-  dmeo_createprojects?: boolean;
-  dmeo_assigntasks?: boolean;
-  dmeo_uploaddocuments?: boolean;
-  dmeo_reviewapprovals?: boolean;
-};
 type FormMode = 'create' | 'edit';
 type DialogState = { type: 'project'; mode: FormMode; item?: Project } | { type: 'task'; mode: FormMode; item?: Task } | { type: 'document'; mode: FormMode; item?: Doc } | null;
 type DeleteTarget = { type: 'project' | 'task' | 'document'; id: string; name: string } | null;
@@ -73,18 +63,22 @@ const initialDocuments: Doc[] = [];
 
 const getEmployeeOptions = (users: ManagedUser[]): ManagedUser[] => users.filter((user: ManagedUser) => user.isActive && user.fullName && (user.role === 'Employee' || user.role === 'Project Manager' || user.role === 'Admin'));
 const getProjectManagerOptions = (users: ManagedUser[]): ManagedUser[] => users.filter((user: ManagedUser) => user.isActive && (user.role === 'Project Manager' || user.role === 'Admin') && user.fullName);
-const projectStatuses: Status[] = ['Planning', 'Active', 'On Hold', 'Completed', 'Cancelled', 'Archived'];
+const projectStatuses: Status[] = ['Planning', 'Active', 'On Hold', 'Completed', 'Cancelled'];
 const roles: Role[] = ['Admin', 'Project Manager', 'Employee', 'Approver'];
 const isActiveOptions: IsActiveValue[] = ['Active', 'Inactive'];
 const permissionOptions = ['Create projects', 'Assign tasks', 'Upload documents', 'Review approvals', 'Manage users'];
 
-const taskStatuses: Status[] = ['Not Started', 'In Progress', 'Submitted', 'Approved', 'Completed', 'Archived'];
-const documentStatuses: Status[] = ['Draft', 'Submitted', 'Approved', 'Rejected', 'Revision Required', 'Archived'];
+const taskStatuses: Status[] = ['Not Started', 'In Progress', 'Submitted', 'Approved', 'Completed'];
+const documentStatuses: Status[] = ['Draft', 'Submitted', 'Approved', 'Rejected', 'Revision Required'];
 const priorities: Priority[] = ['Low', 'Medium', 'High', 'Critical'];
 
 const statusLabels: Record<string, Status> = { OnHold: 'On Hold', NotStarted: 'Not Started', InProgress: 'In Progress', RevisionRequired: 'Revision Required' };
 const statusFromKey = (key: string | undefined, fallback: Status): Status => key ? statusLabels[key] ?? key as Status : fallback;
-const userLookup = (fullName: string) => ({ id: fullName.toLowerCase().replaceAll(' ', '-'), fullName });
+const userLookup = (identifier: string, systemUsers: ManagedUser[]) => {
+  const user = systemUsers.find((u: ManagedUser) => u.id === identifier || isSamePerson(u.fullName, identifier) || isSamePerson(u.email, identifier));
+  if (!user) return undefined;
+  return { id: user.id, fullName: user.fullName };
+};
 const projectLookup = (projectName: string, projectId: string | undefined, projects: Project[]) => {
   const linkedProject = projects.find((project: Project) => project.id === projectId) ?? projects.find((project: Project) => project.name === projectName);
   if (!linkedProject) return undefined;
@@ -98,39 +92,51 @@ const taskLookup = (taskName: string, taskId: string | undefined, tasks: Task[])
 const projectStatusKey = (status: Status): CTSProjectStatusKey => status === 'On Hold' ? 'OnHold' : status as CTSProjectStatusKey;
 const taskStatusKey = (status: Status): CTSTaskStatusKey => status === 'Not Started' ? 'NotStarted' : status === 'In Progress' ? 'InProgress' : status as CTSTaskStatusKey;
 const documentStatusKey = (status: Status): CTSDocumentStatusKey => status === 'Revision Required' ? 'RevisionRequired' : status as CTSDocumentStatusKey;
-const activeRecordQueryOptions = { filter: "statusKey ne 'Archived'" } as const;
-const isArchivedStatus = (status: Status): boolean => status === 'Archived';
-const filterActiveProjects = (rows: Project[]): Project[] => rows.filter((project: Project) => !isArchivedStatus(project.status));
-const filterActiveTasks = (rows: Task[]): Task[] => rows.filter((task: Task) => !isArchivedStatus(task.status));
-const filterActiveDocuments = (rows: Doc[]): Doc[] => rows.filter((doc: Doc) => !isArchivedStatus(doc.status));
-const filterActiveApprovals = (rows: Approval[]): Approval[] => rows;
-const archivedProjectFields = { statusKey: 'Archived' as CTSProjectStatusKey };
-const archivedTaskFields = { statusKey: 'Archived' as CTSTaskStatusKey };
-const archivedDocumentFields = { statusKey: 'Archived' as CTSDocumentStatusKey };
-const toCTSProject = (project: Project): Omit<CTSProject, 'id'> => ({ projectName: project.name, projectCode: project.code ?? '', description: project.description, projectManager: { id: project.managerId || project.manager.toLowerCase().replaceAll(' ', '-'), fullName: project.manager }, statusKey: projectStatusKey(project.status), progress: project.progress, location: project.location, startDate: project.start, endDate: project.end });
-const toCreateCTSProject = (project: Project): Omit<CTSProject, 'id'> => ({ projectName: project.name, projectCode: '', description: project.description, projectManager: { id: project.managerId || project.manager.toLowerCase().replaceAll(' ', '-'), fullName: project.manager }, statusKey: projectStatusKey(project.status), progress: project.progress, location: project.location, startDate: project.start, endDate: project.end });
-const toCTSTask = (task: Task, projects: Project[]): Omit<CTSTask, 'id'> => {
+const activeRecordQueryOptions = { filter: 'isActive eq true' } as const;
+const isRecordActive = (value: boolean | undefined): boolean => value !== false;
+const filterActiveProjects = (rows: Project[]): Project[] => rows.filter((project: Project) => project.isActive);
+const filterActiveTasks = (rows: Task[]): Task[] => rows.filter((task: Task) => task.isActive);
+const filterActiveDocuments = (rows: Doc[]): Doc[] => rows.filter((doc: Doc) => doc.isActive);
+const filterActiveApprovals = (rows: Approval[]): Approval[] => rows.filter((approval: Approval) => approval.isActive);
+const archivedProjectFields = { isActive: false } as const;
+const archivedTaskFields = { isActive: false } as const;
+const archivedDocumentFields = { isActive: false } as const;
+const toCTSProject = (project: Project, systemUsers: ManagedUser[]): Omit<CTSProject, 'id'> => {
+  const manager = userLookup(project.managerId || project.manager, systemUsers);
+  if (!manager) throw new Error('Project must be assigned to a valid Project Manager or Admin before saving.');
+  return { projectName: project.name, projectCode: project.code ?? '', description: project.description, projectManager: manager, projectManagerEmail: project.managerEmail || undefined, isActive: project.isActive, statusKey: projectStatusKey(project.status), progress: project.progress, location: project.location, startDate: project.start, endDate: project.end };
+};
+const toCreateCTSProject = (project: Project, systemUsers: ManagedUser[]): Omit<CTSProject, 'id'> => {
+  const manager = userLookup(project.managerId || project.manager, systemUsers);
+  if (!manager) throw new Error('Project must be assigned to a valid Project Manager or Admin before saving.');
+  return { projectName: project.name, projectCode: '', description: project.description, projectManager: manager, projectManagerEmail: project.managerEmail || undefined, isActive: true, statusKey: projectStatusKey(project.status), progress: project.progress, location: project.location, startDate: project.start, endDate: project.end };
+};
+const toCTSTask = (task: Task, projects: Project[], systemUsers: ManagedUser[]): Omit<CTSTask, 'id'> => {
   const linkedProject = projectLookup(task.project, task.projectId, projects);
   if (!linkedProject) throw new Error('Task must be linked to a valid project before saving.');
-  return { taskName: task.name, project: linkedProject, assignedTo: { id: task.assignedToId || task.assignedTo.toLowerCase().replaceAll(' ', '-'), fullName: task.assignedTo }, dueDate: task.dueDate, statusKey: taskStatusKey(task.status), priorityKey: task.priority as CTSTaskPriorityKey, taskDescription: task.description };
+  const assignee = userLookup(task.assignedToId || task.assignedTo, systemUsers);
+  if (!assignee) throw new Error('Task must be assigned to a valid employee before saving.');
+  return { taskName: task.name, project: linkedProject, assignedTo: assignee, dueDate: task.dueDate, isActive: task.isActive, statusKey: taskStatusKey(task.status), priorityKey: task.priority as CTSTaskPriorityKey, taskDescription: task.description };
 };
 const toCTSTaskStatusUpdate = (task: Task, status: Status): Partial<Omit<CTSTask, 'id'>> => ({ statusKey: taskStatusKey(status) });
-const fromCTSProject = (project: CTSProject): Project => { const status = statusFromKey(project.statusKey, 'Planning'); return { id: project.id, name: project.projectName, code: project.projectCode, manager: project.projectManager?.fullName ?? '', managerId: project.projectManager?.id ?? '', status, progress: project.progress ?? 0, location: project.location ?? '', start: project.startDate ?? '', end: project.endDate ?? '', description: project.description ?? '', isActive: !isArchivedStatus(status) }; };
+const fromCTSProject = (project: CTSProject): Project => { const status = statusFromKey(project.statusKey, 'Planning'); return { id: project.id, name: project.projectName, code: project.projectCode, manager: project.projectManager?.fullName ?? '', managerId: project.projectManager?.id ?? '', managerEmail: project.projectManagerEmail ?? '', status, progress: project.progress ?? 0, location: project.location ?? '', start: project.startDate ?? '', end: project.endDate ?? '', description: project.description ?? '', isActive: isRecordActive(project.isActive) }; };
 const fromCTSTask = (task: CTSTask, projects: Project[]): Task => {
   const mappedStatus = statusFromKey(task.statusKey, 'Not Started');
   const status = taskStatuses.includes(mappedStatus) ? mappedStatus : 'Not Started';
   const projectById = projects.find((project: Project) => project.id === task.project?.id);
-  return { id: task.id, name: task.taskName, taskCode: task.id, project: task.project?.projectName ?? projectById?.name ?? 'General', projectId: task.project?.id ?? projectById?.id ?? '', assignedTo: task.assignedTo?.fullName ?? 'Unassigned', assignedToId: task.assignedTo?.id ?? '', assignedToEmail: '', dueDate: task.dueDate ?? '', status, priority: task.priorityKey ?? 'Medium', description: task.taskDescription ?? '', isActive: !isArchivedStatus(status) };
+  return { id: task.id, name: task.taskName, taskCode: task.id, project: task.project?.projectName ?? projectById?.name ?? 'General', projectId: task.project?.id ?? projectById?.id ?? '', assignedTo: task.assignedTo?.fullName ?? 'Unassigned', assignedToId: task.assignedTo?.id ?? '', assignedToEmail: '', dueDate: task.dueDate ?? '', status, priority: task.priorityKey ?? 'Medium', description: task.taskDescription ?? '', isActive: isRecordActive(task.isActive) };
 };
-const toCTSDocument = (doc: Doc, projects: Project[], tasks: Task[]): Omit<CTSDocument, 'id'> => {
+const toCTSDocument = (doc: Doc, projects: Project[], tasks: Task[], systemUsers: ManagedUser[]): Omit<CTSDocument, 'id'> => {
   const linkedProject = projectLookup(doc.project, doc.projectId, projects);
   const linkedTask = taskLookup(doc.task, doc.taskId, tasks);
+  const uploader = userLookup(doc.uploadedBy, systemUsers);
   if (!linkedProject) throw new Error('Document must be linked to a valid project before saving.');
   if (!linkedTask) throw new Error('Document must be linked to a valid task before saving.');
-  return { documentName: doc.name, versionNumber: doc.version, project: linkedProject, task: linkedTask, uploadedBy: userLookup(doc.uploadedBy), uploadedDate: doc.date, statusKey: documentStatusKey(doc.status), fileSizeMB: Number(doc.size) || 0, documentURL: doc.url, comments: doc.comments, sharePointFileID: doc.documentCode || doc.id };
+  if (!uploader) throw new Error('Document must have a valid uploader before saving.');
+  return { documentName: doc.name, versionNumber: doc.version, project: linkedProject, task: linkedTask, uploadedBy: uploader, uploadedDate: doc.date, isActive: doc.isActive, statusKey: documentStatusKey(doc.status), fileSizeMB: Number(doc.size) || 0, documentURL: doc.url, comments: doc.comments, sharePointFileID: doc.documentCode || doc.id };
 };
-const fromCTSDocument = (doc: CTSDocument, projects: Project[], tasks: Task[]): Doc => { const status = statusFromKey(doc.statusKey, 'Draft'); const projectById = projects.find((project: Project) => project.id === doc.project?.id); const taskById = tasks.find((task: Task) => task.id === doc.task?.id); return { id: doc.id, name: doc.documentName, documentCode: doc.sharePointFileID, version: doc.versionNumber ?? 'V1.0', project: doc.project?.projectName ?? projectById?.name ?? 'General', projectId: doc.project?.id ?? projectById?.id ?? '', task: doc.task?.taskName ?? taskById?.name ?? 'General', taskId: doc.task?.id ?? taskById?.id ?? '', uploadedBy: doc.uploadedBy?.fullName ?? 'Unassigned', date: doc.uploadedDate ?? '', status, size: String(doc.fileSizeMB ?? 0), url: doc.documentURL ?? 'https://example.com/documents/document', comments: doc.comments ?? '', isActive: !isArchivedStatus(status) }; };
-const fromCTSDocumentApproval = (approval: CTSDocumentApproval): Approval => ({ id: approval.id, name: approval.approvalName, documentId: approval.document?.id ?? '', documentName: approval.document?.documentName ?? 'Unlinked document', approver: approval.approver?.fullName ?? 'Unassigned', decision: statusFromKey(approval.decisionKey, 'Pending'), decisionDate: approval.decisionDate ?? '', comments: approval.comments ?? '', isActive: true });
+const fromCTSDocument = (doc: CTSDocument, projects: Project[], tasks: Task[]): Doc => { const status = statusFromKey(doc.statusKey, 'Draft'); const projectById = projects.find((project: Project) => project.id === doc.project?.id); const taskById = tasks.find((task: Task) => task.id === doc.task?.id); return { id: doc.id, name: doc.documentName, documentCode: doc.sharePointFileID, version: doc.versionNumber ?? 'V1.0', project: doc.project?.projectName ?? projectById?.name ?? 'General', projectId: doc.project?.id ?? projectById?.id ?? '', task: doc.task?.taskName ?? taskById?.name ?? 'General', taskId: doc.task?.id ?? taskById?.id ?? '', uploadedBy: doc.uploadedBy?.fullName ?? 'Unassigned', date: doc.uploadedDate ?? '', status, size: String(doc.fileSizeMB ?? 0), url: doc.documentURL ?? 'https://example.com/documents/document', comments: doc.comments ?? '', isActive: isRecordActive(doc.isActive) }; };
+const fromCTSDocumentApproval = (approval: CTSDocumentApproval): Approval => ({ id: approval.id, name: approval.approvalName, documentId: approval.document?.id ?? '', documentName: approval.document?.documentName ?? 'Unlinked document', approver: approval.approver?.fullName ?? 'Unassigned', decision: statusFromKey(approval.decisionKey, 'Pending'), decisionDate: approval.decisionDate ?? '', comments: approval.comments ?? '', isActive: isRecordActive(approval.isActive) });
 
 const getDataverseUserName = (user: DataverseUserOption): string => user.fullName || 'Unnamed User';
 const getDataverseUserEmail = (user: DataverseUserOption): string => user.email ?? '';
@@ -148,6 +154,7 @@ const isProjectAssignedToCurrentUser = (project: Project, currentAccessUser: Man
   if (!currentAccessUser?.isActive) return false;
   const currentIds = [currentAccessUser.id, currentAccessUser.userLookupId].map(normalizeGuid).filter(Boolean);
   if (currentIds.some((id: string) => id === normalizeGuid(project.managerId))) return true;
+  if (Boolean(project.managerEmail) && isSamePerson(project.managerEmail, currentAccessUser.email)) return true;
   return isSamePerson(project.manager, currentAccessUser.fullName) || isSamePerson(project.manager, currentAccessUser.userLookupName) || isSamePerson(project.manager, currentAccessUser.email);
 };
 const isProjectVisibleToCurrentUser = (project: Project, currentAccessUser: ManagedUser | undefined): boolean => {
@@ -256,7 +263,7 @@ function GlobalProjectWorkspacePicker({ projects, role, selectedProjectId, onOpe
 }
 
 function Dashboard({ projects, tasks, documents, role, inactiveRecordCount, totalProjectCount }: { projects: Project[]; tasks: Task[]; documents: Doc[]; role: Role | undefined; inactiveRecordCount: number; totalProjectCount: number }) {
-  const activeProjects = projects.filter((project: Project) => project.status === 'Active');
+  const activeProjects = projects.filter((project: Project) => project.isActive && project.status !== 'Completed' && project.status !== 'Cancelled');
   const activeTasks = tasks.filter((task: Task) => task.status !== 'Completed');
   const pendingDocuments = sortByUploadedDateAscending(documents.filter((doc: Doc) => doc.status === 'Submitted'));
   const isEmployee = role === 'Employee';
@@ -352,7 +359,7 @@ const deriveProjectFromTask = (task: Task, projects: Project[]): Project | undef
   if (linked) return linked;
   const projectKey = task.projectId || task.project;
   if (!projectKey || !task.project) return undefined;
-  return { id: task.projectId || task.project, name: task.project, code: undefined, manager: '', managerId: '', status: 'Active', progress: 0, location: '', start: '', end: '', description: '', isActive: true };
+  return { id: task.projectId || task.project, name: task.project, code: undefined, manager: '', managerId: '', managerEmail: '', status: 'Active', progress: 0, location: '', start: '', end: '', description: '', isActive: true };
 };
 function UploadDocument({ projects, tasks, systemUsers, prefillTask, currentAccessUser, role, onCreate }: { projects: Project[]; tasks: Task[]; systemUsers: ManagedUser[]; prefillTask?: Task; currentAccessUser: ManagedUser | undefined; role: Role | undefined; onCreate: (doc: Doc) => void }) {
   const isEmployee = role === 'Employee';
@@ -426,33 +433,8 @@ const defaultPermissionsByRole: Record<Role, string[]> = {
   Approver: ['Review approvals'],
 };
 
-const permissionFieldAliases: Record<string, string[]> = {
-  'Create projects': ['createProjects', 'create_projects', 'canCreateProjects', 'can_create_projects', 'dmeo_createprojects'],
-  'Assign tasks': ['assignTasks', 'assign_tasks', 'canAssignTasks', 'can_assign_tasks', 'dmeo_assigntasks'],
-  'Upload documents': ['uploadDocuments', 'upload_documents', 'canUploadDocuments', 'can_upload_documents', 'dmeo_uploaddocuments'],
-  'Review approvals': ['reviewApprovals', 'review_approvals', 'canReviewApprovals', 'can_review_approvals', 'dmeo_reviewapprovals'],
-};
-const hasPermissionFlag = (user: SystemUser | undefined, permission: string): boolean => {
-  if (!user) return false;
-  const aliases = permissionFieldAliases[permission] ?? [];
-  const values = user as unknown as Record<string, unknown>;
-  return aliases.some((alias: string) => values[alias] === true || values[alias] === 'true' || values[alias] === 'Yes');
-};
-const toPermissionFields = (permissions: string[]): SystemUserPermissionFields => ({
-  createProjects: permissions.includes('Create projects'),
-  assignTasks: permissions.includes('Assign tasks'),
-  uploadDocuments: permissions.includes('Upload documents'),
-  reviewApprovals: permissions.includes('Review approvals'),
-  dmeo_createprojects: permissions.includes('Create projects'),
-  dmeo_assigntasks: permissions.includes('Assign tasks'),
-  dmeo_uploaddocuments: permissions.includes('Upload documents'),
-  dmeo_reviewapprovals: permissions.includes('Review approvals'),
-});
-const getPermissionsForUser = (user: SystemUser | undefined, role: Role): string[] => {
-  if (!user) return defaultPermissionsByRole[role];
-  const selected = permissionOptions.filter((permission: string) => hasPermissionFlag(user, permission));
-  return selected.length > 0 ? selected : defaultPermissionsByRole[role];
-};
+// The System User Dataverse table has no permission columns; permissions are derived from Role.
+const getPermissionsForUser = (_user: SystemUser | undefined, role: Role): string[] => defaultPermissionsByRole[role];
 
 function AccessManagement({ role: currentRole, currentAccessUser }: { role: Role | undefined; currentAccessUser: ManagedUser | undefined }) {
   const registeredSystemUserList = useSystemUserList();
@@ -518,10 +500,9 @@ function AccessManagement({ role: currentRole, currentAccessUser }: { role: Role
     if (nextErrors.user || nextErrors.name || nextErrors.role) return;
     if (!selectedSystemUser) return;
     const nextUser: ManagedUser = { id: `access-${Date.now()}`, userLookupId: selectedUserId, userLookupName: selectedSystemUser.lookup.fullName, fullName: name, email, isActive: isActive === 'Active', role };
-    const permissionFields = toPermissionFields(selectedPermissions);
     const existingUser = users.find((user: ManagedUser) => normalizeGuid(user.userLookupId) === normalizeGuid(selectedUserId) || (email && isSamePerson(user.email, email)));
     if (existingUser) {
-      const changedFields: Partial<Omit<SystemUser, 'id'>> & SystemUserPermissionFields = { ...toSystemUser(nextUser, selectedSystemUser), ...permissionFields };
+      const changedFields: Partial<Omit<SystemUser, 'id'>> = toSystemUser(nextUser, selectedSystemUser);
       void updateSystemUser.mutateAsync({ id: existingUser.id, changedFields }).then(() => {
         setUsers((current: ManagedUser[]) => current.map((user: ManagedUser) => user.id === existingUser.id ? { ...user, fullName: nextUser.fullName, email: nextUser.email, role: nextUser.role, isActive: nextUser.isActive, userLookupId: nextUser.userLookupId, userLookupName: nextUser.userLookupName } : user));
         void registeredSystemUserList.refetch();
@@ -538,7 +519,7 @@ function AccessManagement({ role: currentRole, currentAccessUser }: { role: Role
       });
       return;
     }
-    const input: Omit<SystemUser, 'id'> & SystemUserPermissionFields = { ...toSystemUser(nextUser, selectedSystemUser), ...permissionFields };
+    const input: Omit<SystemUser, 'id'> = toSystemUser(nextUser, selectedSystemUser);
     void createSystemUser.mutateAsync(input).then((savedUser: SystemUser) => {
       setUsers((current: ManagedUser[]) => [fromSystemUser(savedUser), ...current.filter((user: ManagedUser) => user.id !== savedUser.id)]);
       void registeredSystemUserList.refetch();
@@ -564,7 +545,7 @@ function AccessManagement({ role: currentRole, currentAccessUser }: { role: Role
   const persistEditedUser = () => {
     if (!editingUser) return;
     const selectedDataverseUser = systemUserOptions.find((option: DataverseUserOption) => getDataverseUserId(option) === editingUser.userLookupId);
-    const changedFields: Partial<Omit<SystemUser, 'id'>> & SystemUserPermissionFields = { ...toPermissionFields(editPermissions) };
+    const changedFields: Partial<Omit<SystemUser, 'id'>> = {};
     if (!isEditingSelf) { changedFields.roleKey = roleToRoleKey(editRole); changedFields.isActive = editIsActive === 'Active'; }
     if (selectedDataverseUser) changedFields.user = selectedDataverseUser.lookup;
     void updateSystemUser.mutateAsync({ id: editingUser.id, changedFields }).then(() => {
@@ -607,7 +588,7 @@ function ProjectForm({ mode, item, systemUsers, onCancel, onSave }: { mode: Form
     const nextErrors = { name: name.trim() ? undefined : 'Project name is required.', progress: Number.isFinite(progressValue) && progressValue >= 0 && progressValue <= 100 ? undefined : 'Progress must be between 0 and 100.', manager: selectedManager ? undefined : 'Select a Project Manager or Admin.' };
     setErrors(nextErrors);
     if (nextErrors.name || nextErrors.progress || nextErrors.manager) return;
-    onSave({ id: item?.id ?? `project-${Date.now()}`, name, code: item?.code, manager: selectedManager?.fullName ?? '', managerId: selectedManager?.id ?? '', status, progress: progressValue, location, start, end, description, isActive: item?.isActive ?? true });
+    onSave({ id: item?.id ?? `project-${Date.now()}`, name, code: item?.code, manager: selectedManager?.fullName ?? '', managerId: selectedManager?.id ?? '', managerEmail: selectedManager?.email ?? item?.managerEmail ?? '', status, progress: progressValue, location, start, end, description, isActive: item?.isActive ?? true });
   };
   return <><DialogHeader><DialogTitle>{mode === 'create' ? 'Add Project' : 'Edit Project'}</DialogTitle><DialogDescription>Create or update project details and manager assignment.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 md:grid-cols-2"><div className="space-y-2"><Label>Project Name</Label><Input value={name} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setName(event.target.value)} /><FieldError message={errors.name} /></div><div className="space-y-2"><Label>Project Code</Label><div className="rounded-md border bg-muted px-3 py-2 text-sm text-muted-foreground">{codeDisplay}</div><p className="text-sm text-muted-foreground">Dataverse assigns the real autonumber when the project is saved.</p></div><div className="space-y-2"><Label>Manager</Label><Select value={managerId} onValueChange={setManagerId}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{managerOptions.filter((person: ManagedUser) => person.id).map((person: ManagedUser) => <SelectItem key={person.id} value={person.id}>{person.fullName}</SelectItem>)}</SelectContent></Select><FieldError message={errors.manager} /></div><div className="space-y-2"><Label>Status</Label><Select value={status} onValueChange={(value: Status) => setStatus(value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{projectStatuses.map((itemStatus: Status) => <SelectItem key={itemStatus} value={itemStatus}>{itemStatus}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label>Start Date</Label><DatePickerField value={start} onChange={setStart} placeholder="Pick start date" /></div><div className="space-y-2"><Label>End Date</Label><DatePickerField value={end} onChange={setEnd} placeholder="Pick end date" /></div><div className="space-y-2"><Label>Location</Label><Input value={location} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setLocation(event.target.value)} /></div><div className="space-y-2"><Label>Progress</Label><Input value={progress} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setProgress(event.target.value)} /><FieldError message={errors.progress} /></div><div className="space-y-2 md:col-span-2"><Label>Description</Label><Textarea value={description} onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setDescription(event.target.value)} /></div></div><DialogFooter><Button variant="outline" onClick={onCancel}>Cancel</Button><Button onClick={save}>Save project</Button></DialogFooter></>;
 }
@@ -662,6 +643,63 @@ function InactiveRecordsScreen({ projects, tasks, documents, approvals, onRestor
   const inactiveApprovals = approvals.filter((approval: Approval) => !approval.isActive);
   return <div className="space-y-4"><InMemoryDataBanner show={HAS_IN_MEMORY_TABLES} message="Restore sets Is Active back to Yes and returns records to normal screens." /><div className="grid gap-4 md:grid-cols-4"><KpiCard title="Inactive Projects" value={String(inactiveProjects.length)} icon={<BriefcaseBusiness className="h-5 w-5" />} /><KpiCard title="Inactive Tasks" value={String(inactiveTasks.length)} icon={<ClipboardList className="h-5 w-5" />} /><KpiCard title="Inactive Documents" value={String(inactiveDocuments.length)} icon={<FileText className="h-5 w-5" />} /><KpiCard title="Inactive Approvals" value={String(inactiveApprovals.length)} icon={<CheckCircle2 className="h-5 w-5" />} /></div><Card><CardHeader><div className="flex items-center justify-between gap-4"><CardTitle>Restore inactive records</CardTitle><Select value={recordType} onValueChange={(value: 'projects' | 'tasks' | 'documents' | 'approvals') => setRecordType(value)}><SelectTrigger className="w-56"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="projects">Projects</SelectItem><SelectItem value="tasks">Tasks</SelectItem><SelectItem value="documents">Documents</SelectItem><SelectItem value="approvals">Document approvals</SelectItem></SelectContent></Select></div></CardHeader><CardContent className="p-0">{recordType === 'projects' && <Table><TableHeader><TableRow><TableHead>Project</TableHead><TableHead>Manager</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{inactiveProjects.map((project: Project) => <TableRow key={project.id}><TableCell className="font-medium">{project.name}</TableCell><TableCell>{project.manager || 'Unassigned'}</TableCell><TableCell><StatusBadge status={project.status} /></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={() => onRestore('project', project.id)}><RotateCcw className="h-4 w-4" /> Restore</Button></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'tasks' && <Table><TableHeader><TableRow><TableHead>Task</TableHead><TableHead>Project</TableHead><TableHead>Assigned To</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{inactiveTasks.map((task: Task) => <TableRow key={task.id}><TableCell className="font-medium">{task.name}</TableCell><TableCell>{task.project}</TableCell><TableCell>{task.assignedTo}</TableCell><TableCell><StatusBadge status={task.status} /></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={() => onRestore('task', task.id)}><RotateCcw className="h-4 w-4" /> Restore</Button></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'documents' && <Table><TableHeader><TableRow><TableHead>Document</TableHead><TableHead>Project</TableHead><TableHead>Task</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{inactiveDocuments.map((doc: Doc) => <TableRow key={doc.id}><TableCell className="font-medium">{doc.name}</TableCell><TableCell>{doc.project}</TableCell><TableCell>{doc.task}</TableCell><TableCell><StatusBadge status={doc.status} /></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={() => onRestore('document', doc.id)}><RotateCcw className="h-4 w-4" /> Restore</Button></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'approvals' && <Table><TableHeader><TableRow><TableHead>Approval</TableHead><TableHead>Document</TableHead><TableHead>Approver</TableHead><TableHead>Decision</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{inactiveApprovals.map((approval: Approval) => <TableRow key={approval.id}><TableCell className="font-medium">{approval.name}</TableCell><TableCell>{approval.documentName}</TableCell><TableCell>{approval.approver}</TableCell><TableCell><StatusBadge status={approval.decision} /></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={() => onRestore('approval', approval.id)}><RotateCcw className="h-4 w-4" /> Restore</Button></TableCell></TableRow>)}</TableBody></Table>}</CardContent></Card></div>;
 }
+
+function DataRepairScreen({ projects, tasks, documents, systemUsers, onRepairTask, onRepairDocument, onRepairProject }: { projects: Project[]; tasks: Task[]; documents: Doc[]; systemUsers: ManagedUser[]; onRepairTask: (taskId: string, projectId: string, assignedToId: string) => void; onRepairDocument: (docId: string, projectId: string, taskId: string, uploadedById: string) => void; onRepairProject: (projectId: string, managerId: string, managerEmail: string) => void }) {
+  const [recordType, setRecordType] = useState<'tasks' | 'documents' | 'projects'>('tasks');
+  
+  const tasksWithBlankProject = tasks.filter((task: Task) => !task.projectId);
+  const tasksWithBlankAssignee = tasks.filter((task: Task) => !task.assignedToId);
+  const tasksNeedingRepair = tasks.filter((task: Task) => !task.projectId || !task.assignedToId);
+  
+  const documentsWithBlankLookups = documents.filter((doc: Doc) => !doc.projectId || !doc.taskId);
+  
+  const projectsWithBlankManager = projects.filter((project: Project) => !project.managerId);
+  
+  const [selectedRepairs, setSelectedRepairs] = useState<Record<string, { projectId?: string; taskId?: string; assignedToId?: string; uploadedById?: string; managerId?: string; managerEmail?: string }>>({});
+  
+  const toggleSelection = (id: string, field: string, value: string) => {
+    setSelectedRepairs((prev: Record<string, { projectId?: string; taskId?: string; assignedToId?: string; uploadedById?: string; managerId?: string; managerEmail?: string }>) => ({ ...prev, [id]: { ...(prev[id] || {}), [field]: value } }));
+  };
+  
+  const repairSelected = () => {
+    if (recordType === 'tasks') {
+      let repaired = 0;
+      tasksNeedingRepair.forEach((task: Task) => {
+        const repair = selectedRepairs[task.id];
+        if (repair?.projectId && repair?.assignedToId) {
+          onRepairTask(task.id, repair.projectId, repair.assignedToId);
+          repaired++;
+        }
+      });
+      toast.success(`Repaired ${repaired} task(s)`);
+    } else if (recordType === 'documents') {
+      let repaired = 0;
+      documentsWithBlankLookups.forEach((doc: Doc) => {
+        const repair = selectedRepairs[doc.id];
+        if (repair?.projectId && repair?.taskId && repair?.uploadedById) {
+          onRepairDocument(doc.id, repair.projectId, repair.taskId, repair.uploadedById);
+          repaired++;
+        }
+      });
+      toast.success(`Repaired ${repaired} document(s)`);
+    } else if (recordType === 'projects') {
+      let repaired = 0;
+      projectsWithBlankManager.forEach((project: Project) => {
+        const repair = selectedRepairs[project.id];
+        if (repair?.managerId) {
+          const manager = systemUsers.find((u: ManagedUser) => u.id === repair.managerId);
+          onRepairProject(project.id, repair.managerId, manager?.email ?? '');
+          repaired++;
+        }
+      });
+      toast.success(`Repaired ${repaired} project(s)`);
+    }
+    setSelectedRepairs({});
+  };
+  
+  return <div className="space-y-4"><InMemoryDataBanner show={HAS_IN_MEMORY_TABLES} message="Data Repair fixes blank lookup columns in Dataverse by setting the correct IDs. This is needed for records saved before the lookup write fix." /><div className="grid gap-4 md:grid-cols-3"><KpiCard title="Tasks needing repair" value={String(tasksNeedingRepair.length)} icon={<ClipboardList className="h-5 w-5" />} /><KpiCard title="Documents needing repair" value={String(documentsWithBlankLookups.length)} icon={<FileText className="h-5 w-5" />} /><KpiCard title="Projects needing repair" value={String(projectsWithBlankManager.length)} icon={<BriefcaseBusiness className="h-5 w-5" />} /></div><Card><CardHeader><div className="flex items-center justify-between gap-4"><CardTitle>Repair blank lookup columns</CardTitle><div className="flex gap-2"><Select value={recordType} onValueChange={(value: 'tasks' | 'documents' | 'projects') => setRecordType(value)}><SelectTrigger className="w-56"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="tasks">Tasks</SelectItem><SelectItem value="documents">Documents</SelectItem><SelectItem value="projects">Projects</SelectItem></SelectContent></Select><Button onClick={repairSelected}>Apply Repairs</Button></div></div></CardHeader><CardContent className="p-0">{recordType === 'tasks' && <Table><TableHeader><TableRow><TableHead>Task</TableHead><TableHead>Missing Project?</TableHead><TableHead>Select Project</TableHead><TableHead>Missing Assignee?</TableHead><TableHead>Select Assignee</TableHead></TableRow></TableHeader><TableBody>{tasksNeedingRepair.map((task: Task) => <TableRow key={task.id}><TableCell className="font-medium">{task.name}</TableCell><TableCell>{!task.projectId ? <Badge variant="destructive">Missing</Badge> : <Badge variant="outline">OK</Badge>}</TableCell><TableCell><Select value={selectedRepairs[task.id]?.projectId ?? ''} onValueChange={(value: string) => toggleSelection(task.id, 'projectId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select project..." /></SelectTrigger><SelectContent>{projects.map((p: Project) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent></Select></TableCell><TableCell>{!task.assignedToId ? <Badge variant="destructive">Missing</Badge> : <Badge variant="outline">OK</Badge>}</TableCell><TableCell><Select value={selectedRepairs[task.id]?.assignedToId ?? ''} onValueChange={(value: string) => toggleSelection(task.id, 'assignedToId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select employee..." /></SelectTrigger><SelectContent>{systemUsers.map((u: ManagedUser) => <SelectItem key={u.id} value={u.id}>{u.fullName}</SelectItem>)}</SelectContent></Select></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'documents' && <Table><TableHeader><TableRow><TableHead>Document</TableHead><TableHead>Select Project</TableHead><TableHead>Select Task</TableHead><TableHead>Select Uploaded By</TableHead></TableRow></TableHeader><TableBody>{documentsWithBlankLookups.map((doc: Doc) => <TableRow key={doc.id}><TableCell className="font-medium">{doc.name}</TableCell><TableCell><Select value={selectedRepairs[doc.id]?.projectId ?? ''} onValueChange={(value: string) => toggleSelection(doc.id, 'projectId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select project..." /></SelectTrigger><SelectContent>{projects.map((p: Project) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent></Select></TableCell><TableCell><Select value={selectedRepairs[doc.id]?.taskId ?? ''} onValueChange={(value: string) => toggleSelection(doc.id, 'taskId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select task..." /></SelectTrigger><SelectContent>{tasks.map((t: Task) => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}</SelectContent></Select></TableCell><TableCell><Select value={selectedRepairs[doc.id]?.uploadedById ?? ''} onValueChange={(value: string) => toggleSelection(doc.id, 'uploadedById', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select user..." /></SelectTrigger><SelectContent>{systemUsers.map((u: ManagedUser) => <SelectItem key={u.id} value={u.id}>{u.fullName}</SelectItem>)}</SelectContent></Select></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'projects' && <Table><TableHeader><TableRow><TableHead>Project</TableHead><TableHead>Current Manager</TableHead><TableHead>Select Manager</TableHead></TableRow></TableHeader><TableBody>{projectsWithBlankManager.map((project: Project) => <TableRow key={project.id}><TableCell className="font-medium">{project.name}</TableCell><TableCell>{project.manager || 'Unassigned'}</TableCell><TableCell><Select value={selectedRepairs[project.id]?.managerId ?? ''} onValueChange={(value: string) => toggleSelection(project.id, 'managerId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select manager..." /></SelectTrigger><SelectContent>{systemUsers.filter((u: ManagedUser) => u.role === 'Admin' || u.role === 'Project Manager').map((u: ManagedUser) => <SelectItem key={u.id} value={u.id}>{u.fullName}</SelectItem>)}</SelectContent></Select></TableCell></TableRow>)}</TableBody></Table>}</CardContent></Card></div>;
+}
+
 export default function HomePage() {
   const allProjectList = useCTSProjectList();
   const allTaskList = useCTSTaskList();
@@ -743,7 +781,7 @@ export default function HomePage() {
     window.history.replaceState(null, '', '#/project-workspace');
     setScreen('Project Workspace');
   };
-  const decideDocument = (doc: Doc, decision: 'Approved' | 'Rejected', comments: string) => { if (currentUserAccess.role !== 'Approver' && currentUserAccess.role !== 'Admin') { toast.error('You do not have permission to approve documents'); return; } const relatedTask = tasks.find((task: Task) => task.id === doc.taskId || task.name === doc.task); const nextDocumentStatus: Status = decision === 'Approved' ? 'Approved' : 'Revision Required'; const nextTaskStatus: Status = decision === 'Approved' ? 'Approved' : 'In Progress'; const approvalInput: Omit<CTSDocumentApproval, 'id'> = { approvalName: `${decision} - ${doc.name}`, document: { id: doc.id, documentName: doc.name }, approver: { id: currentAccessUser?.id ?? 'current-user', fullName: currentAccessUser?.fullName ?? 'Current user' }, decisionKey: decision, comments, decisionDate: new Date().toISOString() }; void createApproval.mutateAsync(approvalInput).then((createdApproval: CTSDocumentApproval) => { const updates: Promise<unknown>[] = [updateDocument.mutateAsync({ id: doc.id, changedFields: { statusKey: documentStatusKey(nextDocumentStatus) } })]; if (relatedTask) updates.push(updateTask.mutateAsync({ id: relatedTask.id, changedFields: toCTSTaskStatusUpdate(relatedTask, nextTaskStatus) })); return Promise.all(updates).then(() => createdApproval); }).then((createdApproval: CTSDocumentApproval) => { setApprovals((current: Approval[]) => [fromCTSDocumentApproval(createdApproval), ...current]); setDocuments((current: Doc[]) => current.map((item: Doc) => item.id === doc.id ? { ...item, status: nextDocumentStatus } : item)); if (relatedTask) setTasks((current: Task[]) => current.map((item: Task) => item.id === relatedTask.id ? { ...item, status: nextTaskStatus } : item)); refetchAllRecords(); toast.success(decision === 'Approved' ? 'Document approved' : 'Document rejected'); }).catch(() => toast.error('Approval decision could not be saved')); };
+  const decideDocument = (doc: Doc, decision: 'Approved' | 'Rejected', comments: string) => { if (currentUserAccess.role !== 'Approver' && currentUserAccess.role !== 'Admin') { toast.error('You do not have permission to approve documents'); return; } const relatedTask = tasks.find((task: Task) => task.id === doc.taskId || task.name === doc.task); const nextDocumentStatus: Status = decision === 'Approved' ? 'Approved' : 'Revision Required'; const nextTaskStatus: Status = decision === 'Approved' ? 'Approved' : 'In Progress'; const approvalInput: Omit<CTSDocumentApproval, 'id'> = { approvalName: `${decision} - ${doc.name}`, document: { id: doc.id, documentName: doc.name }, approver: { id: currentAccessUser?.id ?? 'current-user', fullName: currentAccessUser?.fullName ?? 'Current user' }, decisionKey: decision, comments, decisionDate: new Date().toISOString(), isActive: true }; void createApproval.mutateAsync(approvalInput).then((createdApproval: CTSDocumentApproval) => { const updates: Promise<unknown>[] = [updateDocument.mutateAsync({ id: doc.id, changedFields: { statusKey: documentStatusKey(nextDocumentStatus) } })]; if (relatedTask) updates.push(updateTask.mutateAsync({ id: relatedTask.id, changedFields: toCTSTaskStatusUpdate(relatedTask, nextTaskStatus) })); return Promise.all(updates).then(() => createdApproval); }).then((createdApproval: CTSDocumentApproval) => { setApprovals((current: Approval[]) => [fromCTSDocumentApproval(createdApproval), ...current]); setDocuments((current: Doc[]) => current.map((item: Doc) => item.id === doc.id ? { ...item, status: nextDocumentStatus } : item)); if (relatedTask) setTasks((current: Task[]) => current.map((item: Task) => item.id === relatedTask.id ? { ...item, status: nextTaskStatus } : item)); refetchAllRecords(); toast.success(decision === 'Approved' ? 'Document approved' : 'Document rejected'); }).catch(() => toast.error('Approval decision could not be saved')); };
   const submitTaskForApproval = (task: Task) => { if (currentUserAccess.role !== 'Employee' && currentUserAccess.role !== 'Project Manager' && currentUserAccess.role !== 'Admin') { toast.error('You do not have permission to submit tasks'); return; } if (!hasSubmittedDocumentForTask(task, documents)) { toast.warning('Upload a submitted document before submitting this task.'); return; } const nextTask = { ...task, status: 'Submitted' as Status }; void updateTask.mutateAsync({ id: task.id, changedFields: toCTSTaskStatusUpdate(task, 'Submitted') }).then(() => { setTasks((current: Task[]) => current.map((item: Task) => item.id === task.id ? nextTask : item)); refetchAllRecords(); toast.success('Task submitted for approval'); }).catch(() => toast.error('Task could not be submitted')); };
   const openUploadForTask = (task: Task) => { setUploadPrefillTask(task); window.history.replaceState(null, '', '#/upload-document'); setScreen('Upload Document'); };
   useEffect(() => {
@@ -775,12 +813,12 @@ export default function HomePage() {
   useEffect(() => { if (systemUserList.data) setSystemUsers(systemUserList.data.map((user: SystemUser) => fromSystemUser(user))); }, [systemUserList.data]);
 
   const closeDialog = () => setDialog(null);
-  const saveProject = (project: Project) => { if (dialog?.mode === 'create' && !isActiveAdmin(currentAccessUser)) { toast.error('Only active admins can add projects'); return; } if (currentAccessUser?.role === 'Project Manager' && !isProjectAssignedToCurrentUser(project, currentAccessUser)) { toast.error('You can only edit projects assigned to you.'); return; } if (!isActiveAdmin(currentAccessUser) && currentUserAccess.role !== 'Project Manager') { toast.error('You do not have permission to edit projects'); return; } const persist = dialog?.mode === 'edit' ? updateProject.mutateAsync({ id: project.id, changedFields: toCTSProject(project) }) : createProject.mutateAsync(toCreateCTSProject(project)); void persist.then((savedProject: CTSProject) => { const nextProject = fromCTSProject(savedProject); setProjects((current: Project[]) => dialog?.mode === 'edit' ? current.map((item: Project) => item.id === project.id ? nextProject : item) : [nextProject, ...current]); closeDialog(); refetchAllRecords(); toast.success(dialog?.mode === 'create' ? `Project created successfully. Project Code: ${nextProject.code || 'Pending'}` : 'Project saved'); }).catch(() => toast.error('Project could not be saved')); };
-  const saveTask = (task: Task) => { if (!isActiveAdmin(currentAccessUser) && currentUserAccess.role !== 'Project Manager') { toast.error('Admins and project managers can create, edit, reassign, and delete tasks.'); return; } const persist = dialog?.mode === 'edit' ? updateTask.mutateAsync({ id: task.id, changedFields: toCTSTask(task, allProjects) }) : createTask.mutateAsync(toCTSTask(task, allProjects)); void persist.then((savedTask: CTSTask) => { const nextTask = resolveTaskAssignees([dialog?.mode === 'edit' ? task : fromCTSTask(savedTask, allProjects)], systemUsers)[0]; setTasks((current: Task[]) => dialog?.mode === 'edit' ? current.map((item: Task) => item.id === task.id ? nextTask : item) : [nextTask, ...current]); closeDialog(); refetchAllRecords(); toast.success('Task saved'); }).catch((error: unknown) => {
+  const saveProject = (project: Project) => { if (dialog?.mode === 'create' && !isActiveAdmin(currentAccessUser)) { toast.error('Only active admins can add projects'); return; } if (currentAccessUser?.role === 'Project Manager' && !isProjectAssignedToCurrentUser(project, currentAccessUser)) { toast.error('You can only edit projects assigned to you.'); return; } if (!isActiveAdmin(currentAccessUser) && currentUserAccess.role !== 'Project Manager') { toast.error('You do not have permission to edit projects'); return; } const persist = dialog?.mode === 'edit' ? updateProject.mutateAsync({ id: project.id, changedFields: toCTSProject(project, systemUsers) }) : createProject.mutateAsync(toCreateCTSProject(project, systemUsers)); void persist.then((savedProject: CTSProject) => { const nextProject = fromCTSProject(savedProject); setProjects((current: Project[]) => dialog?.mode === 'edit' ? current.map((item: Project) => item.id === project.id ? nextProject : item) : [nextProject, ...current]); closeDialog(); refetchAllRecords(); toast.success(dialog?.mode === 'create' ? `Project created successfully. Project Code: ${nextProject.code || 'Pending'}` : 'Project saved'); }).catch(() => toast.error('Project could not be saved')); };
+  const saveTask = (task: Task) => { if (!isActiveAdmin(currentAccessUser) && currentUserAccess.role !== 'Project Manager') { toast.error('Admins and project managers can create, edit, reassign, and delete tasks.'); return; } const persist = dialog?.mode === 'edit' ? updateTask.mutateAsync({ id: task.id, changedFields: toCTSTask(task, allProjects, systemUsers) }) : createTask.mutateAsync(toCTSTask(task, allProjects, systemUsers)); void persist.then((savedTask: CTSTask) => { const nextTask = resolveTaskAssignees([dialog?.mode === 'edit' ? task : fromCTSTask(savedTask, allProjects)], systemUsers)[0]; setTasks((current: Task[]) => dialog?.mode === 'edit' ? current.map((item: Task) => item.id === task.id ? nextTask : item) : [nextTask, ...current]); closeDialog(); refetchAllRecords(); toast.success('Task saved'); }).catch((error: unknown) => {
     const message = error instanceof Error && error.message ? error.message : 'Task could not be saved';
     toast.error(message);
   }); };
-  const saveDocument = (doc: Doc) => { if (!isActiveAdmin(currentAccessUser) && currentUserAccess.role !== 'Project Manager' && !currentUserAccess.permissions.uploadDocuments) { toast.error('You do not have permission to upload documents'); return; } const persist = dialog?.mode === 'edit' ? updateDocument.mutateAsync({ id: doc.id, changedFields: toCTSDocument(doc, allProjects, allTasks) }) : createDocument.mutateAsync(toCTSDocument(doc, allProjects, allTasks)); void persist.then(() => { setDocuments((current: Doc[]) => dialog?.mode === 'edit' ? current.map((item: Doc) => item.id === doc.id ? doc : item) : [doc, ...current]); closeDialog(); refetchAllRecords(); toast.success('Document saved'); }).catch((error: unknown) => {
+  const saveDocument = (doc: Doc) => { if (!isActiveAdmin(currentAccessUser) && currentUserAccess.role !== 'Project Manager' && !currentUserAccess.permissions.uploadDocuments) { toast.error('You do not have permission to upload documents'); return; } const persist = dialog?.mode === 'edit' ? updateDocument.mutateAsync({ id: doc.id, changedFields: toCTSDocument(doc, allProjects, allTasks, systemUsers) }) : createDocument.mutateAsync(toCTSDocument(doc, allProjects, allTasks, systemUsers)); void persist.then(() => { setDocuments((current: Doc[]) => dialog?.mode === 'edit' ? current.map((item: Doc) => item.id === doc.id ? doc : item) : [doc, ...current]); closeDialog(); refetchAllRecords(); toast.success('Document saved'); }).catch((error: unknown) => {
     const message = error instanceof Error && error.message ? error.message : 'Document could not be saved';
     toast.error(message);
   }); };
@@ -827,15 +865,49 @@ export default function HomePage() {
     });
   };
   const restoreRecord = (type: 'project' | 'task' | 'document' | 'approval', id: string) => {
-    const action = type === 'project' ? updateProject.mutateAsync({ id, changedFields: { statusKey: 'Active' as CTSProjectStatusKey } }) : type === 'task' ? updateTask.mutateAsync({ id, changedFields: { statusKey: 'NotStarted' as CTSTaskStatusKey } }) : type === 'document' ? updateDocument.mutateAsync({ id, changedFields: { statusKey: 'Draft' as CTSDocumentStatusKey } }) : Promise.resolve();
+    const action = type === 'project' ? updateProject.mutateAsync({ id, changedFields: { isActive: true } }) : type === 'task' ? updateTask.mutateAsync({ id, changedFields: { isActive: true } }) : type === 'document' ? updateDocument.mutateAsync({ id, changedFields: { isActive: true } }) : updateApproval.mutateAsync({ id, changedFields: { isActive: true } });
     void action.then(() => {
-      if (type === 'project') setProjects((current: Project[]) => current.map((project: Project) => project.id === id ? { ...project, status: 'Active', isActive: true } : project));
-      if (type === 'task') setTasks((current: Task[]) => current.map((task: Task) => task.id === id ? { ...task, status: 'Not Started', isActive: true } : task));
-      if (type === 'document') setDocuments((current: Doc[]) => current.map((doc: Doc) => doc.id === id ? { ...doc, status: 'Draft', isActive: true } : doc));
+      if (type === 'project') setProjects((current: Project[]) => current.map((project: Project) => project.id === id ? { ...project, isActive: true } : project));
+      if (type === 'task') setTasks((current: Task[]) => current.map((task: Task) => task.id === id ? { ...task, isActive: true } : task));
+      if (type === 'document') setDocuments((current: Doc[]) => current.map((doc: Doc) => doc.id === id ? { ...doc, isActive: true } : doc));
+      if (type === 'approval') setApprovals((current: Approval[]) => current.map((approval: Approval) => approval.id === id ? { ...approval, isActive: true } : approval));
       refetchAllRecords();
       toast.success('Record restored');
     }).catch((error: unknown) => {
       const message = error instanceof Error && error.message ? error.message : 'Record could not be restored';
+      toast.error(message);
+    });
+  };
+  const repairTask = (taskId: string, projectId: string, assignedToId: string) => {
+    const task = allTasks.find((t: Task) => t.id === taskId);
+    const project = allProjects.find((p: Project) => p.id === projectId);
+    const assignee = systemUsers.find((u: ManagedUser) => u.id === assignedToId);
+    if (!task || !project || !assignee) return;
+    const updates: Partial<Omit<CTSTask, 'id'>> = {};
+    if (!task.projectId) updates.project = { id: project.id, projectName: project.name };
+    if (!task.assignedToId) updates.assignedTo = { id: assignee.id, fullName: assignee.fullName };
+    void updateTask.mutateAsync({ id: taskId, changedFields: updates }).then(() => { refetchAllRecords(); }).catch((error: unknown) => {
+      const message = error instanceof Error && error.message ? error.message : 'Task repair failed';
+      toast.error(message);
+    });
+  };
+  const repairDocument = (docId: string, projectId: string, taskId: string, uploadedById: string) => {
+    const project = allProjects.find((p: Project) => p.id === projectId);
+    const task = allTasks.find((t: Task) => t.id === taskId);
+    const uploader = systemUsers.find((u: ManagedUser) => u.id === uploadedById);
+    if (!project || !task || !uploader) return;
+    const updates: Partial<Omit<CTSDocument, 'id'>> = { project: { id: project.id, projectName: project.name }, task: { id: task.id, taskName: task.name }, uploadedBy: { id: uploader.id, fullName: uploader.fullName } };
+    void updateDocument.mutateAsync({ id: docId, changedFields: updates }).then(() => { refetchAllRecords(); }).catch((error: unknown) => {
+      const message = error instanceof Error && error.message ? error.message : 'Document repair failed';
+      toast.error(message);
+    });
+  };
+  const repairProject = (projectId: string, managerId: string, managerEmail: string) => {
+    const manager = systemUsers.find((u: ManagedUser) => u.id === managerId);
+    if (!manager) return;
+    const updates: Partial<Omit<CTSProject, 'id'>> = { projectManager: { id: manager.id, fullName: manager.fullName }, projectManagerEmail: managerEmail };
+    void updateProject.mutateAsync({ id: projectId, changedFields: updates }).then(() => { refetchAllRecords(); }).catch((error: unknown) => {
+      const message = error instanceof Error && error.message ? error.message : 'Project repair failed';
       toast.error(message);
     });
   };
@@ -848,16 +920,15 @@ export default function HomePage() {
     const relatedTaskNames = new Set(relatedTasks.map((task: Task) => task.name));
     const relatedDocuments = allDocuments.filter((doc: Doc) => normalizeGuid(doc.projectId) === normalizeGuid(project.id) || doc.project === project.name || relatedTaskIds.has(doc.taskId) || relatedTaskNames.has(doc.task));
     const relatedDocumentIds = new Set(relatedDocuments.map((doc: Doc) => doc.id));
-    const relatedDocumentNames = new Set(relatedDocuments.map((doc: Doc) => doc.name));
     const runReactivate = async () => {
-      for (const task of relatedTasks) { await updateTask.mutateAsync({ id: task.id, changedFields: { statusKey: 'NotStarted' as CTSTaskStatusKey } }); }
-      for (const doc of relatedDocuments) { await updateDocument.mutateAsync({ id: doc.id, changedFields: { statusKey: 'Draft' as CTSDocumentStatusKey } }); }
-      await updateProject.mutateAsync({ id: project.id, changedFields: { statusKey: 'Active' as CTSProjectStatusKey } });
+      for (const task of relatedTasks) { await updateTask.mutateAsync({ id: task.id, changedFields: { isActive: true } }); }
+      for (const doc of relatedDocuments) { await updateDocument.mutateAsync({ id: doc.id, changedFields: { isActive: true } }); }
+      await updateProject.mutateAsync({ id: project.id, changedFields: { isActive: true } });
     };
     void runReactivate().then(() => {
-      setProjects((current: Project[]) => current.map((item: Project) => item.id === project.id ? { ...item, status: 'Active', isActive: true } : item));
-      setTasks((current: Task[]) => current.map((task: Task) => normalizeGuid(task.projectId) === normalizeGuid(project.id) || task.project === project.name ? { ...task, status: 'Not Started', isActive: true } : task));
-      setDocuments((current: Doc[]) => current.map((doc: Doc) => normalizeGuid(doc.projectId) === normalizeGuid(project.id) || doc.project === project.name || relatedDocumentIds.has(doc.id) ? { ...doc, status: 'Draft', isActive: true } : doc));
+      setProjects((current: Project[]) => current.map((item: Project) => item.id === project.id ? { ...item, isActive: true } : item));
+      setTasks((current: Task[]) => current.map((task: Task) => normalizeGuid(task.projectId) === normalizeGuid(project.id) || task.project === project.name ? { ...task, isActive: true } : task));
+      setDocuments((current: Doc[]) => current.map((doc: Doc) => normalizeGuid(doc.projectId) === normalizeGuid(project.id) || doc.project === project.name || relatedDocumentIds.has(doc.id) ? { ...doc, isActive: true } : doc));
       refetchAllRecords();
       toast.success('Project and related records reactivated');
     }).catch((error: unknown) => {
@@ -871,7 +942,7 @@ export default function HomePage() {
     if (!targetProject) { toast.error('Select a project to receive reassigned tasks.'); return; }
     const relatedTasks = tasks.filter((task: Task) => normalizeGuid(task.projectId) === normalizeGuid(deleteTarget.id) || task.project === deleteTarget.name);
     const updatedTasks = relatedTasks.map((task: Task): Task => ({ ...task, project: targetProject.name, projectId: targetProject.id }));
-    const reassignActions: Promise<unknown>[] = updatedTasks.map((task: Task) => updateTask.mutateAsync({ id: task.id, changedFields: toCTSTask(task, allProjects) }));
+    const reassignActions: Promise<unknown>[] = updatedTasks.map((task: Task) => updateTask.mutateAsync({ id: task.id, changedFields: toCTSTask(task, allProjects, systemUsers) }));
     void Promise.all(reassignActions).then(() => {
       setTasks((current: Task[]) => current.map((task: Task) => normalizeGuid(task.projectId) === normalizeGuid(deleteTarget.id) || task.project === deleteTarget.name ? { ...task, project: targetProject.name, projectId: targetProject.id } : task));
       refetchAllRecords();
@@ -894,6 +965,7 @@ export default function HomePage() {
     if (screen === 'Upload Document') return <UploadDocument projects={scopedProjects} tasks={scopedTasks} systemUsers={systemUsers} prefillTask={uploadPrefillTask} currentAccessUser={currentAccessUser} role={currentAccessUser?.role} onCreate={saveDocument} />;
     if (screen === 'Approval Center') return <ApprovalCenter documents={scopedDocuments} approvals={activeApprovals} role={currentAccessUser?.role} currentAccessUser={currentAccessUser} onDecision={decideDocument} />;
     if (screen === 'Inactive Records') return <InactiveRecordsScreen projects={allProjects} tasks={allTasks} documents={allDocuments} approvals={allApprovals} onRestore={restoreRecord} />;
+    if (screen === 'Data Repair') return <DataRepairScreen projects={allProjects} tasks={allTasks} documents={allDocuments} systemUsers={systemUsers} onRepairTask={repairTask} onRepairDocument={repairDocument} onRepairProject={repairProject} />;
     return <AccessManagement role={currentAccessUser?.role} currentAccessUser={currentAccessUser} />;
   }, [screen, dashboardProjects, dashboardTasks, dashboardDocuments, scopedAllProjects, scopedProjects, scopedTasks, scopedDocuments, activeTasks, activeDocuments, activeApprovals, allProjects, allTasks, allDocuments, allApprovals, inactiveRecordCount, systemUsers, uploadPrefillTask, selectedWorkspaceProjectId, dialog?.mode, currentUserAccess.role, currentUserAccess.permissions, currentAccessUser]);
   const deleteSummary = deleteTarget?.type === 'project' ? getProjectDeleteDependencies(deleteTarget) : undefined;

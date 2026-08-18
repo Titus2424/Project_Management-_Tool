@@ -11,6 +11,7 @@ export const CTSTaskSchema = z.object({
   priorityKey: z.enum(['Low', 'Medium', 'High', 'Critical']).optional(),
   project: z.object({ id: z.string().uuid(), projectName: z.string() }).optional(),
   statusKey: z.enum(['NotStarted', 'InProgress', 'Submitted', 'Approved', 'Completed']).optional(),
+  isActive: z.boolean().optional(),
   taskDescription: z.string().optional(),
 });
 

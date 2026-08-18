@@ -730,6 +730,18 @@
           "validationMetadata": {
             "maxLength": 2000
           }
+        },
+        {
+          "displayName": "Is Active",
+          "apiPropertyName": "dmeo_isactive",
+          "apiPropertyNameCaseSensitive": "dmeo_IsActive",
+          "isRequired": false,
+          "typescriptPropertyName": "isActive",
+          "isPrimaryId": false,
+          "type": "Boolean",
+          "validationMetadata": {},
+          "isPrimaryName": false,
+          "propertyJsDocs": {}
         }
       ]
     },
@@ -1360,6 +1372,18 @@
           "isPrimaryId": false,
           "type": "Lookup",
           "validationMetadata": {}
+        },
+        {
+          "displayName": "Is Active",
+          "apiPropertyName": "dmeo_isactive",
+          "apiPropertyNameCaseSensitive": "dmeo_IsActive",
+          "isRequired": false,
+          "typescriptPropertyName": "isActive",
+          "isPrimaryId": false,
+          "type": "Boolean",
+          "validationMetadata": {},
+          "isPrimaryName": false,
+          "propertyJsDocs": {}
         }
       ]
     },
@@ -2683,6 +2707,18 @@
           "isPrimaryId": false,
           "type": "Choice",
           "validationMetadata": {}
+        },
+        {
+          "displayName": "Is Active",
+          "apiPropertyName": "dmeo_isactive",
+          "apiPropertyNameCaseSensitive": "dmeo_IsActive",
+          "isRequired": false,
+          "typescriptPropertyName": "isActive",
+          "isPrimaryId": false,
+          "type": "Boolean",
+          "validationMetadata": {},
+          "isPrimaryName": false,
+          "propertyJsDocs": {}
         }
       ]
     },
@@ -3469,6 +3505,18 @@
           "validationMetadata": {
             "maxLength": 100
           }
+        },
+        {
+          "apiPropertyNameCaseSensitive": "dmeo_IsActive",
+          "apiPropertyName": "dmeo_isactive",
+          "typescriptPropertyName": "isActive",
+          "isPrimaryId": false,
+          "displayName": "Is Active",
+          "type": "Boolean",
+          "propertyJsDocs": {},
+          "validationMetadata": {},
+          "isRequired": false,
+          "isPrimaryName": false
         }
       ]
     },
@@ -6432,7 +6480,7 @@
           "isRequired": false,
           "propertyJsDocs": {
             "typeHint": "decimal",
-            "minValue": 1e-12,
+            "minValue": 1E-12,
             "maxValue": 100000000000,
             "precision": 12
           },
@@ -6443,7 +6491,7 @@
           "isPrimaryId": false,
           "type": "Decimal",
           "validationMetadata": {
-            "minValue": 1e-12,
+            "minValue": 1E-12,
             "maxValue": 100000000000,
             "precision": 12
           }
