@@ -1,0 +1,128 @@
+{
+  "appDisplayName": "Construction_PMS",
+  "description": "A modern enterprise app for managing multinational construction projects, tasks, document metadata, and approvals.",
+  "buildPath": "./dist",
+  "buildEntryPoint": "index.html",
+  "logoPath": "Default",
+  "localAppUrl": "http://localhost:5173/",
+  "appId": "1f2e8023-9cc5-4772-b62b-5ad8f731e881",
+  "environmentId": "e3ce6a5b-ed6e-e60e-af3e-95da64019813",
+  "tags": {
+    "planId": "",
+    "projectId": "0b5b04d8-51fd-4827-bdb4-2ddeac6b7890"
+  },
+  "connectionReferences": {
+    "6249525d-7eca-4e23-954e-77e84c4a40ae": {
+      "id": "/providers/Microsoft.PowerApps/apis/shared_a365mcpservers",
+      "displayName": "Microsoft MCP Servers",
+      "dataSets": {},
+      "iconUri": "https://static.powerapps.com/resource/ppcr/releases/v1.0.1819/1.0.1819.4798/a365mcpservers/icon.png",
+      "dataSources": [
+        "a365mcpservers"
+      ],
+      "isOnPremiseConnection": false,
+      "bypassConsent": false,
+      "apiTier": "Premium",
+      "isCustomApiConnection": false
+    }
+  },
+  "databaseReferences": {
+    "default.cds": {
+      "databaseDetails": {
+        "environmentName": "default.cds",
+        "referenceType": "Environmental",
+        "linkedEnvironmentMetadata": {
+          "resourceId": "6a7d3233-bfe1-ee11-9048-00224806e103",
+          "friendlyName": "Training - PowerApps",
+          "uniqueName": "unq6a7d3233bfe1ee11904800224806e",
+          "domainName": "org6f5c6a52",
+          "version": "9.2.26072.150",
+          "instanceUrl": "https://org6f5c6a52.crm.dynamics.com/",
+          "instanceApiUrl": "https://org6f5c6a52.api.crm.dynamics.com",
+          "baseLanguage": 1033,
+          "instanceState": "Ready",
+          "createdTime": "2024-03-14T05:17:14.127Z",
+          "platformSku": "Standard"
+        }
+      },
+      "dataSources": {
+        "dmeo_ctstask": {
+          "entitySetName": "dmeo_ctstasks",
+          "logicalName": "dmeo_ctstask",
+          "isHidden": false
+        },
+        "dmeo_ctsdocument": {
+          "entitySetName": "dmeo_ctsdocuments",
+          "logicalName": "dmeo_ctsdocument",
+          "isHidden": false
+        },
+        "dmeo_systemuser": {
+          "entitySetName": "dmeo_systemusers",
+          "logicalName": "dmeo_systemuser",
+          "isHidden": false
+        },
+        "dmeo_ctsdocumentapproval": {
+          "entitySetName": "dmeo_ctsdocumentapprovals",
+          "logicalName": "dmeo_ctsdocumentapproval",
+          "isHidden": false
+        },
+        "dmeo_ctsproject": {
+          "entitySetName": "dmeo_ctsprojects",
+          "logicalName": "dmeo_ctsproject",
+          "isHidden": false
+        },
+        "systemuser": {
+          "entitySetName": "systemusers",
+          "logicalName": "systemuser",
+          "isHidden": false
+        },
+        "calendar": {
+          "entitySetName": "calendars",
+          "logicalName": "calendar",
+          "isHidden": false
+        },
+        "cdm_company": {
+          "entitySetName": "cdm_companies",
+          "logicalName": "cdm_company",
+          "isHidden": false
+        },
+        "queue": {
+          "entitySetName": "queues",
+          "logicalName": "queue",
+          "isHidden": false
+        },
+        "transactioncurrency": {
+          "entitySetName": "transactioncurrencies",
+          "logicalName": "transactioncurrency",
+          "isHidden": false
+        },
+        "mobileofflineprofile": {
+          "entitySetName": "mobileofflineprofiles",
+          "logicalName": "mobileofflineprofile",
+          "isHidden": false
+        },
+        "position": {
+          "entitySetName": "positions",
+          "logicalName": "position",
+          "isHidden": false
+        },
+        "territory": {
+          "entitySetName": "territories",
+          "logicalName": "territory",
+          "isHidden": false
+        },
+        "mailbox": {
+          "entitySetName": "mailboxes",
+          "logicalName": "mailbox",
+          "isHidden": false
+        },
+        "businessunit": {
+          "entitySetName": "businessunits",
+          "logicalName": "businessunit",
+          "isHidden": false
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}
