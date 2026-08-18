@@ -44,11 +44,14 @@ const normalizeIdentity = (value: string | undefined): string => (value ?? '').t
 // The System User Dataverse table has no permission columns; permissions are derived from Role.
 const getPermissionsFromSystemUser = (record: SystemUser | undefined): CurrentUserPermissions => {
   if (!record) return defaultPermissions;
-  switch (record.roleKey) {
+  const roleValue = (record.roleKey as string | undefined) ?? '';
+  switch (roleValue) {
     case 'Admin':
       return { createProjects: true, assignTasks: true, uploadDocuments: true, reviewApprovals: true };
     case 'ProjectManager':
       return { createProjects: true, assignTasks: true, uploadDocuments: true, reviewApprovals: false };
+    case 'Lead':
+      return { createProjects: false, assignTasks: false, uploadDocuments: true, reviewApprovals: false };
     case 'Approver':
       return { createProjects: false, assignTasks: false, uploadDocuments: false, reviewApprovals: true };
     case 'Employee':
@@ -60,7 +63,10 @@ const getPermissionsFromSystemUser = (record: SystemUser | undefined): CurrentUs
 
 const getRoleLabel = (record: SystemUser | undefined): string | undefined => {
   if (!record) return undefined;
-  return record.roleKey === 'ProjectManager' ? 'Project Manager' : record.roleKey;
+  const roleValue = (record.roleKey as string | undefined) ?? '';
+  if (roleValue === 'ProjectManager') return 'Project Manager';
+  if (roleValue === 'Lead') return 'Lead';
+  return roleValue || undefined;
 };
 
 const getAccessBlockedMessage = (isProvisioned: boolean, isActive: boolean): string => {

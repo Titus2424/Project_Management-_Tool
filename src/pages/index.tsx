@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { format } from 'date-fns';
 import { Archive, Bell, BriefcaseBusiness, Building2, CalendarDays, CalendarIcon, Check, CheckCircle2, ChevronsUpDown, ClipboardList, Edit, Eye, FileText, KeyRound, Plus, RotateCcw, Search, Send, ShieldCheck, Trash2, Upload, UserPlus, Users, X } from 'lucide-react';
 import { toast } from 'sonner';
@@ -19,6 +19,8 @@ import type { CTSDocument, CTSDocumentStatusKey } from '@/generated/models/cts-d
 import type { CTSDocumentApproval } from '@/generated/models/cts-document-approval-model';
 import { useUser } from '@/hooks/use-user';
 import { useCurrentUserRole } from '@/contexts/current-user-role-context';
+import { PowerAutomateUploadService } from '@/features/document-upload/PowerAutomateUploadService';
+import { getAccessibleScreens as getAccessibleScreensByRole, getRoleScopedDocuments as getRoleScopedDocumentsByRole, getRoleScopedProjects as getRoleScopedProjectsByRole, getRoleScopedTasks as getRoleScopedTasksByRole, isTaskAssignedToCurrentUser as isTaskAssignedToCurrentUserByRole, isSamePerson as isSamePersonByRole, normalizeGuid as normalizeGuidValue, taskMatchesProject as taskMatchesProjectByRole, type AccessDocument, type AccessProject, type AccessTask, type AccessUser } from '@/features/access/access-control';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from '@/components/ui/breadcrumb';
@@ -45,7 +47,7 @@ type Screen = (typeof navItems)[number];
 type Status = 'Planning' | 'Active' | 'On Hold' | 'Completed' | 'Cancelled' | 'Draft' | 'Submitted' | 'Approved' | 'Rejected' | 'Revision Required' | 'Not Started' | 'In Progress' | 'Pending';
 type Priority = 'Low' | 'Medium' | 'High' | 'Critical';
 type IsActiveValue = 'Active' | 'Inactive';
-type Role = 'Admin' | 'Project Manager' | 'Employee' | 'Approver';
+type Role = 'Admin' | 'Project Manager' | 'Lead' | 'Employee' | 'Approver';
 type Project = { id: string; name: string; code?: string; manager: string; managerId: string; managerEmail: string; status: Status; progress: number; location: string; start: string; end: string; description: string; isActive: boolean };
 type Task = { id: string; name: string; taskCode: string; project: string; projectId: string; assignedTo: string; assignedToId: string; assignedToEmail: string; dueDate: string; status: Status; priority: Priority; description: string; isActive: boolean };
 type Doc = { id: string; name: string; documentCode: string; version: string; project: string; projectId: string; task: string; taskId: string; uploadedBy: string; date: string; status: Status; size: string; url: string; comments: string; isActive: boolean };
@@ -64,7 +66,9 @@ const initialDocuments: Doc[] = [];
 const getEmployeeOptions = (users: ManagedUser[]): ManagedUser[] => users.filter((user: ManagedUser) => user.isActive && user.fullName && (user.role === 'Employee' || user.role === 'Project Manager' || user.role === 'Admin'));
 const getProjectManagerOptions = (users: ManagedUser[]): ManagedUser[] => users.filter((user: ManagedUser) => user.isActive && (user.role === 'Project Manager' || user.role === 'Admin') && user.fullName);
 const projectStatuses: Status[] = ['Planning', 'Active', 'On Hold', 'Completed', 'Cancelled'];
-const roles: Role[] = ['Admin', 'Project Manager', 'Employee', 'Approver'];
+const roles: Role[] = ['Admin', 'Project Manager', 'Lead', 'Employee', 'Approver'];
+const MAX_UPLOAD_FILE_BYTES = 5 * 1024 * 1024;
+const UPLOAD_ACCEPTED_EXTENSIONS = '.pdf,.doc,.docx,.dwg,.png,.jpg,.jpeg,.xlsx,.zip';
 const isActiveOptions: IsActiveValue[] = ['Active', 'Inactive'];
 const permissionOptions = ['Create projects', 'Assign tasks', 'Upload documents', 'Review approvals', 'Manage users'];
 
@@ -101,6 +105,7 @@ const filterActiveApprovals = (rows: Approval[]): Approval[] => rows.filter((app
 const archivedProjectFields = { isActive: false } as const;
 const archivedTaskFields = { isActive: false } as const;
 const archivedDocumentFields = { isActive: false } as const;
+let documentIsActiveSupported = true;
 const toCTSProject = (project: Project, systemUsers: ManagedUser[]): Omit<CTSProject, 'id'> => {
   const manager = userLookup(project.managerId || project.manager, systemUsers);
   if (!manager) throw new Error('Project must be assigned to a valid Project Manager or Admin before saving.');
@@ -126,14 +131,15 @@ const fromCTSTask = (task: CTSTask, projects: Project[]): Task => {
   const projectById = projects.find((project: Project) => project.id === task.project?.id);
   return { id: task.id, name: task.taskName, taskCode: task.id, project: task.project?.projectName ?? projectById?.name ?? 'General', projectId: task.project?.id ?? projectById?.id ?? '', assignedTo: task.assignedTo?.fullName ?? 'Unassigned', assignedToId: task.assignedTo?.id ?? '', assignedToEmail: '', dueDate: task.dueDate ?? '', status, priority: task.priorityKey ?? 'Medium', description: task.taskDescription ?? '', isActive: isRecordActive(task.isActive) };
 };
-const toCTSDocument = (doc: Doc, projects: Project[], tasks: Task[], systemUsers: ManagedUser[]): Omit<CTSDocument, 'id'> => {
+const toCTSDocument = (doc: Doc, projects: Project[], tasks: Task[], systemUsers: ManagedUser[], includeIsActive: boolean): Omit<CTSDocument, 'id'> => {
   const linkedProject = projectLookup(doc.project, doc.projectId, projects);
   const linkedTask = taskLookup(doc.task, doc.taskId, tasks);
   const uploader = userLookup(doc.uploadedBy, systemUsers);
   if (!linkedProject) throw new Error('Document must be linked to a valid project before saving.');
   if (!linkedTask) throw new Error('Document must be linked to a valid task before saving.');
   if (!uploader) throw new Error('Document must have a valid uploader before saving.');
-  return { documentName: doc.name, versionNumber: doc.version, project: linkedProject, task: linkedTask, uploadedBy: uploader, uploadedDate: doc.date, isActive: doc.isActive, statusKey: documentStatusKey(doc.status), fileSizeMB: Number(doc.size) || 0, documentURL: doc.url, comments: doc.comments, sharePointFileID: doc.documentCode || doc.id };
+  const baseDocument: Omit<CTSDocument, 'id'> = { documentName: doc.name, versionNumber: doc.version, project: linkedProject, task: linkedTask, uploadedBy: uploader, uploadedDate: doc.date, statusKey: documentStatusKey(doc.status), fileSizeMB: Number(doc.size) || 0, documentURL: doc.url, comments: doc.comments, sharePointFileID: doc.documentCode || doc.id };
+  return includeIsActive ? { ...baseDocument, isActive: doc.isActive } : baseDocument;
 };
 const fromCTSDocument = (doc: CTSDocument, projects: Project[], tasks: Task[]): Doc => { const status = statusFromKey(doc.statusKey, 'Draft'); const projectById = projects.find((project: Project) => project.id === doc.project?.id); const taskById = tasks.find((task: Task) => task.id === doc.task?.id); return { id: doc.id, name: doc.documentName, documentCode: doc.sharePointFileID, version: doc.versionNumber ?? 'V1.0', project: doc.project?.projectName ?? projectById?.name ?? 'General', projectId: doc.project?.id ?? projectById?.id ?? '', task: doc.task?.taskName ?? taskById?.name ?? 'General', taskId: doc.task?.id ?? taskById?.id ?? '', uploadedBy: doc.uploadedBy?.fullName ?? 'Unassigned', date: doc.uploadedDate ?? '', status, size: String(doc.fileSizeMB ?? 0), url: doc.documentURL ?? 'https://example.com/documents/document', comments: doc.comments ?? '', isActive: isRecordActive(doc.isActive) }; };
 const fromCTSDocumentApproval = (approval: CTSDocumentApproval): Approval => ({ id: approval.id, name: approval.approvalName, documentId: approval.document?.id ?? '', documentName: approval.document?.documentName ?? 'Unlinked document', approver: approval.approver?.fullName ?? 'Unassigned', decision: statusFromKey(approval.decisionKey, 'Pending'), decisionDate: approval.decisionDate ?? '', comments: approval.comments ?? '', isActive: isRecordActive(approval.isActive) });
@@ -143,7 +149,7 @@ const getDataverseUserEmail = (user: DataverseUserOption): string => user.email 
 const getDataverseUserId = (user: DataverseUserOption): string => user.id;
 const roleKeyToRole = (key: SystemUserRoleKey | undefined): Role => {
   const value = key as string | undefined;
-  return value === 'ProjectManager' ? 'Project Manager' : value === 'Approver' ? 'Approver' : value === 'Admin' || value === 'Employee' ? value : 'Employee';
+  return value === 'ProjectManager' ? 'Project Manager' : value === 'Approver' ? 'Approver' : value === 'Lead' ? 'Lead' : value === 'Admin' || value === 'Employee' ? value : 'Employee';
 };
 const roleToRoleKey = (value: Role): SystemUserRoleKey => value === 'Project Manager' ? 'ProjectManager' : value as SystemUserRoleKey;
 const fromSystemUser = (user: SystemUser): ManagedUser => ({ id: user.id, fullName: user.fullName, email: user.email ?? '', isActive: user.isActive ?? false, role: roleKeyToRole(user.roleKey), userLookupName: user.user?.fullName ?? 'Unlinked', userLookupId: user.user?.id ?? '' });
@@ -161,15 +167,10 @@ const isProjectVisibleToCurrentUser = (project: Project, currentAccessUser: Mana
   if (!currentAccessUser?.isActive) return false;
   return normalize(currentAccessUser.role) === 'admin' || normalize(currentAccessUser.role) === 'approver' || isProjectAssignedToCurrentUser(project, currentAccessUser);
 };
-const normalizeGuid = (value: string | undefined): string => (value ?? '').trim().replace(/^\{/, '').replace(/\}$/, '').toLowerCase();
+const normalizeGuid = (value: string | undefined): string => normalizeGuidValue(value);
 const normalizeIdentity = (value: string | undefined): string => (value ?? '').trim().toLowerCase();
-const isSamePerson = (left: string | undefined, right: string | undefined): boolean => Boolean(normalizeIdentity(left)) && normalizeIdentity(left) === normalizeIdentity(right);
-const taskMatchesProject = (task: Task, project: Project): boolean => {
-  const taskProjectId = normalizeGuid(task.projectId);
-  const projectId = normalizeGuid(project.id);
-  if (taskProjectId && projectId) return taskProjectId === projectId;
-  return Boolean(normalize(task.project)) && normalize(task.project) === normalize(project.name);
-};
+const isSamePerson = (left: string | undefined, right: string | undefined): boolean => isSamePersonByRole(left, right);
+const taskMatchesProject = (task: Task, project: Project): boolean => taskMatchesProjectByRole(task as AccessTask, project as AccessProject);
 
 const resolveTaskAssignees = (tasks: Task[], users: ManagedUser[]): Task[] => tasks.map((task: Task) => {
   if (!task.assignedToId && !task.assignedTo) return task;
@@ -179,43 +180,13 @@ const resolveTaskAssignees = (tasks: Task[], users: ManagedUser[]): Task[] => ta
 });
 const screenToRoute = (screen: Screen): string => screen.toLowerCase().replaceAll(' ', '-');
 const routeToScreen = (route: string): Screen | undefined => navItems.find((item: Screen) => screenToRoute(item) === route.replace(/^#\/?/, '').replace(/^\/?/, ''));
-const roleScreenRules: Record<string, readonly Screen[]> = {
-  Admin: navItems,
-  'Project Manager': ['Dashboard', 'Projects', 'Project Workspace', 'Tasks', 'My Tasks', 'Documents', 'Upload Document', 'Approval Center'],
-  Employee: ['Dashboard', 'My Tasks', 'Documents', 'Upload Document'],
-  Approver: ['Dashboard', 'Documents', 'Approval Center'],
-};
-const getAccessibleScreens = (role: string | undefined, isActive: boolean): readonly Screen[] => isActive && role ? roleScreenRules[role] ?? ['Dashboard'] : ['Dashboard'];
-const getRoleScopedProjects = (projects: Project[], tasks: Task[], currentAccessUser: ManagedUser | undefined): Project[] => {
-  if (!currentAccessUser?.isActive) return [];
-  if (currentAccessUser.role === 'Admin' || currentAccessUser.role === 'Approver') return projects;
-  if (currentAccessUser.role === 'Project Manager') return projects.filter((project: Project) => isProjectVisibleToCurrentUser(project, currentAccessUser));
-  const assignedProjectIds = new Set(tasks.filter((task: Task) => isTaskAssignedToCurrentUser(task, currentAccessUser)).map((task: Task) => normalizeGuid(task.projectId)).filter(Boolean));
-  const assignedProjectNames = new Set(tasks.filter((task: Task) => isTaskAssignedToCurrentUser(task, currentAccessUser)).map((task: Task) => normalize(task.project)).filter(Boolean));
-  return projects.filter((project: Project) => assignedProjectIds.has(normalizeGuid(project.id)) || assignedProjectNames.has(normalize(project.name)));
-};
+const getAccessibleScreens = (role: Role | undefined, isActive: boolean): readonly Screen[] => getAccessibleScreensByRole(role, isActive) as readonly Screen[];
+const getRoleScopedProjects = (projects: Project[], tasks: Task[], currentAccessUser: ManagedUser | undefined): Project[] => getRoleScopedProjectsByRole(projects as AccessProject[], tasks as AccessTask[], currentAccessUser as AccessUser | undefined) as Project[];
 const isTaskInScopedProjects = (task: Task, scopedProjects: Project[]): boolean => scopedProjects.some((project: Project) => normalizeGuid(task.projectId) === normalizeGuid(project.id) || normalize(task.project) === normalize(project.name));
 const isDocumentInScopedProjects = (doc: Doc, scopedProjects: Project[]): boolean => scopedProjects.some((project: Project) => normalizeGuid(doc.projectId) === normalizeGuid(project.id) || normalize(doc.project) === normalize(project.name));
-const getRoleScopedTasks = (tasks: Task[], scopedProjects: Project[], currentAccessUser: ManagedUser | undefined): Task[] => {
-  if (!currentAccessUser) return [];
-  if (currentAccessUser.role === 'Admin') return tasks;
-  if (currentAccessUser.role === 'Project Manager') return tasks.filter((task: Task) => isTaskInScopedProjects(task, scopedProjects));
-  if (currentAccessUser.role === 'Approver') return tasks.filter((task: Task) => isTaskInScopedProjects(task, scopedProjects));
-  return tasks.filter((task: Task) => isTaskAssignedToCurrentUser(task, currentAccessUser));
-};
-const getRoleScopedDocuments = (documents: Doc[], scopedProjects: Project[], currentAccessUser: ManagedUser | undefined): Doc[] => {
-  if (!currentAccessUser) return [];
-  if (currentAccessUser.role === 'Admin' || currentAccessUser.role === 'Approver') return documents;
-  return documents.filter((doc: Doc) => isDocumentInScopedProjects(doc, scopedProjects));
-};
-const isTaskAssignedToCurrentUser = (task: Task, currentAccessUser: ManagedUser | undefined): boolean => {
-  if (!currentAccessUser) return false;
-  const currentIds = [currentAccessUser.id, currentAccessUser.userLookupId].map(normalizeGuid).filter(Boolean);
-  const taskAssigneeId = normalizeGuid(task.assignedToId);
-  if (currentIds.some((id: string) => id === taskAssigneeId)) return true;
-  if (Boolean(task.assignedToEmail) && isSamePerson(task.assignedToEmail, currentAccessUser.email)) return true;
-  return isSamePerson(task.assignedTo, currentAccessUser.fullName) || isSamePerson(task.assignedTo, currentAccessUser.userLookupName) || isSamePerson(task.assignedTo, currentAccessUser.email);
-};
+const getRoleScopedTasks = (tasks: Task[], scopedProjects: Project[], currentAccessUser: ManagedUser | undefined): Task[] => getRoleScopedTasksByRole(tasks as AccessTask[], scopedProjects as AccessProject[], currentAccessUser as AccessUser | undefined) as Task[];
+const getRoleScopedDocuments = (documents: Doc[], scopedProjects: Project[], currentAccessUser: ManagedUser | undefined): Doc[] => getRoleScopedDocumentsByRole(documents as AccessDocument[], scopedProjects as AccessProject[], currentAccessUser as AccessUser | undefined) as Doc[];
+const isTaskAssignedToCurrentUser = (task: Task, currentAccessUser: ManagedUser | undefined): boolean => isTaskAssignedToCurrentUserByRole(task as AccessTask, currentAccessUser as AccessUser | undefined);
 const sortTasksByDueDateAscending = (tasks: Task[]): Task[] => [...tasks].sort((left: Task, right: Task) => new Date(left.dueDate || '9999-12-31').getTime() - new Date(right.dueDate || '9999-12-31').getTime());
 const isOverdueTask = (task: Task): boolean => Boolean(task.dueDate) && new Date(task.dueDate).getTime() < new Date(new Date().toDateString()).getTime() && task.status !== 'Completed';
 const hasSubmittedDocumentForTask = (task: Task, documents: Doc[]): boolean => documents.some((doc: Doc) => (doc.taskId === task.id || doc.task === task.name || doc.task === task.id) && doc.status !== 'Draft');
@@ -332,7 +303,8 @@ function TasksScreen({ tasks, projects, role, openCreate, onEdit, onDelete, onMo
   const columns: Status[] = ['Not Started', 'In Progress', 'Submitted', 'Approved', 'Completed'];
   const [projectFilter, setProjectFilter] = useState('all');
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
-  if (role !== 'Admin' && role !== 'Project Manager') return <Card><CardContent className="p-6"><p className="font-medium">Tasks access is restricted.</p><p className="text-sm text-muted-foreground">Use My Tasks for employee assignments and Approval Center for reviews.</p></CardContent></Card>;
+  const isReadOnlyLead = role === 'Lead';
+  if (role !== 'Admin' && role !== 'Project Manager' && role !== 'Lead') return <Card><CardContent className="p-6"><p className="font-medium">Tasks access is restricted.</p><p className="text-sm text-muted-foreground">Use My Tasks for employee assignments and Approval Center for reviews.</p></CardContent></Card>;
   const visibleTasks = projectFilter === 'all' ? tasks : tasks.filter((task: Task) => projects.some((project: Project) => project.id === projectFilter && taskMatchesProject(task, project)));
   const handleDrop = (status: Status) => {
     const task = visibleTasks.find((item: Task) => item.id === draggedTaskId);
@@ -342,10 +314,10 @@ function TasksScreen({ tasks, projects, role, openCreate, onEdit, onDelete, onMo
     if (task.status === status) return;
     onMoveTask(task, status);
   };
-  return <div className="space-y-4"><InMemoryDataBanner show={HAS_IN_MEMORY_TABLES} message="This app uses generated table hooks for task data." /><div className="flex items-center justify-between"><Select value={projectFilter} onValueChange={setProjectFilter}><SelectTrigger className="w-64"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All projects</SelectItem>{projects.filter((project: Project) => project.id).map((project: Project) => <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>)}</SelectContent></Select><Button onClick={openCreate}><Plus className="h-4 w-4" /> Create Task</Button></div><div className="grid gap-4 lg:grid-cols-4">{columns.map((status: Status) => <Card key={status} onDragOver={(event: React.DragEvent<HTMLDivElement>) => { event.preventDefault(); }} onDrop={() => handleDrop(status)} className={status === 'Approved' ? 'border-dashed' : ''}><CardHeader><CardTitle className="text-base">{status}</CardTitle></CardHeader><CardContent className="space-y-3">{visibleTasks.filter((task: Task) => task.status === status).map((task: Task) => <div key={task.id} draggable={task.status !== 'Approved'} onDragStart={() => setDraggedTaskId(task.id)} onDragEnd={() => setDraggedTaskId(null)} className="rounded-lg border bg-card p-3 text-card-foreground shadow-sm"><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-medium text-muted-foreground">{task.taskCode}</p><p className="font-medium">{task.name}</p><p className="text-sm text-muted-foreground">Assigned To: {task.assignedTo || 'Unassigned'}</p></div><div className="flex gap-1"><Button variant="ghost" size="icon-sm" onClick={() => onEdit(task)}><Edit className="h-4 w-4" /></Button><Button variant="ghost" size="icon-sm" onClick={() => onDelete(task)}><Trash2 className="h-4 w-4" /></Button></div></div><p className="mt-3 text-sm font-medium">{task.dueDate}</p><StatusBadge status={task.status} /></div>)}</CardContent></Card>)}</div></div>;
+  return <div className="space-y-4"><InMemoryDataBanner show={HAS_IN_MEMORY_TABLES} message="This app uses generated table hooks for task data." /><div className="flex items-center justify-between"><Select value={projectFilter} onValueChange={setProjectFilter}><SelectTrigger className="w-64"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All projects</SelectItem>{projects.filter((project: Project) => project.id).map((project: Project) => <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>)}</SelectContent></Select>{!isReadOnlyLead && <Button onClick={openCreate}><Plus className="h-4 w-4" /> Create Task</Button>}</div>{isReadOnlyLead && <p className="text-sm text-muted-foreground">Lead users have read-only task access for assigned project tasks.</p>}<div className="grid gap-4 lg:grid-cols-4">{columns.map((status: Status) => <Card key={status} onDragOver={(event: React.DragEvent<HTMLDivElement>) => { if (!isReadOnlyLead) event.preventDefault(); }} onDrop={() => { if (!isReadOnlyLead) handleDrop(status); }} className={status === 'Approved' ? 'border-dashed' : ''}><CardHeader><CardTitle className="text-base">{status}</CardTitle></CardHeader><CardContent className="space-y-3">{visibleTasks.filter((task: Task) => task.status === status).map((task: Task) => <div key={task.id} draggable={!isReadOnlyLead && task.status !== 'Approved'} onDragStart={() => setDraggedTaskId(task.id)} onDragEnd={() => setDraggedTaskId(null)} className="rounded-lg border bg-card p-3 text-card-foreground shadow-sm"><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-medium text-muted-foreground">{task.taskCode}</p><p className="font-medium">{task.name}</p><p className="text-sm text-muted-foreground">Assigned To: {task.assignedTo || 'Unassigned'}</p></div>{!isReadOnlyLead && <div className="flex gap-1"><Button variant="ghost" size="icon-sm" onClick={() => onEdit(task)}><Edit className="h-4 w-4" /></Button><Button variant="ghost" size="icon-sm" onClick={() => onDelete(task)}><Trash2 className="h-4 w-4" /></Button></div>}</div><p className="mt-3 text-sm font-medium">{task.dueDate}</p><StatusBadge status={task.status} /></div>)}</CardContent></Card>)}</div></div>;
 }
 function MyTasks({ tasks, documents, role, currentAccessUser, onUploadDocument, onSubmitTask }: { tasks: Task[]; documents: Doc[]; role: Role | undefined; currentAccessUser: ManagedUser | undefined; onUploadDocument: (task: Task) => void; onSubmitTask: (task: Task) => void }) {
-  if (role !== 'Employee' && role !== 'Project Manager' && role !== 'Admin') return <Card><CardContent className="p-6"><p className="font-medium">My Tasks access is restricted.</p><p className="text-sm text-muted-foreground">Only employees, project managers, and admins can view assigned tasks.</p></CardContent></Card>;
+  if (role !== 'Employee' && role !== 'Lead' && role !== 'Project Manager' && role !== 'Admin') return <Card><CardContent className="p-6"><p className="font-medium">My Tasks access is restricted.</p><p className="text-sm text-muted-foreground">Only employees, leads, project managers, and admins can view assigned tasks.</p></CardContent></Card>;
   const mine = sortTasksByDueDateAscending(tasks.filter((task: Task) => isTaskAssignedToCurrentUser(task, currentAccessUser)));
   return <div className="space-y-4"><InMemoryDataBanner show={HAS_IN_MEMORY_TABLES} message="This app uses generated Dataverse hooks for assigned task data." /><h1 className="text-xl font-semibold">My Assigned Tasks{currentAccessUser?.fullName ? ` - ${currentAccessUser.fullName}` : ''}</h1>{mine.length === 0 ? <Card><CardContent className="p-8"><Empty><EmptyHeader><EmptyTitle>No tasks assigned to you yet.</EmptyTitle><EmptyDescription>Assigned work will appear here after a project manager creates tasks for you.</EmptyDescription></EmptyHeader></Empty></CardContent></Card> : <div className="grid gap-4 lg:grid-cols-2">{mine.map((task: Task) => { const overdue = isOverdueTask(task); const canSubmit = hasSubmittedDocumentForTask(task, documents); return <Card key={task.id} className={overdue ? 'border-destructive' : ''}><CardContent className="grid gap-4 p-5 md:grid-cols-[1fr_auto]"><div className="space-y-3"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold">{task.name}</p>{overdue && <Badge variant="destructive">Overdue</Badge>}</div><p className="text-sm"><span className="font-medium">Project:</span> {task.project}</p><p className="flex items-center gap-2 text-sm"><CalendarDays className="h-4 w-4" /><span className="font-medium">Due:</span> {task.dueDate || 'No due date'}</p><div className="flex flex-wrap gap-2"><StatusBadge status={task.status} /><Badge variant={getPriorityBadgeVariant(task.priority)}>{task.priority}</Badge></div><p className="text-sm text-muted-foreground">{task.description || 'No task description provided.'}</p></div><div className="flex min-w-52 flex-col gap-3"><Button variant="outline" onClick={() => onUploadDocument(task)}><Upload className="h-4 w-4" /> Upload Document</Button><Button disabled={!canSubmit} onClick={() => onSubmitTask(task)}><Send className="h-4 w-4" /> Submit for Approval</Button>{!canSubmit && <p className="text-sm text-muted-foreground">Upload a non-draft document before submitting.</p>}</div></CardContent></Card>; })}</div>}</div>;
 }
@@ -361,13 +333,18 @@ const deriveProjectFromTask = (task: Task, projects: Project[]): Project | undef
   if (!projectKey || !task.project) return undefined;
   return { id: task.projectId || task.project, name: task.project, code: undefined, manager: '', managerId: '', managerEmail: '', status: 'Active', progress: 0, location: '', start: '', end: '', description: '', isActive: true };
 };
-function UploadDocument({ projects, tasks, systemUsers, prefillTask, currentAccessUser, role, onCreate }: { projects: Project[]; tasks: Task[]; systemUsers: ManagedUser[]; prefillTask?: Task; currentAccessUser: ManagedUser | undefined; role: Role | undefined; onCreate: (doc: Doc) => void }) {
-  const isEmployee = role === 'Employee';
+function UploadDocument({ projects, tasks, systemUsers, prefillTask, currentAccessUser, role, onCreate }: { projects: Project[]; tasks: Task[]; systemUsers: ManagedUser[]; prefillTask?: Task; currentAccessUser: ManagedUser | undefined; role: Role | undefined; onCreate: (doc: Doc) => Promise<CTSDocument | void> }) {
+  const isEmployee = role === 'Employee' || role === 'Lead';
   const [name, setName] = useState('New_Document.pdf');
   const [projectId, setProjectId] = useState('');
   const [taskId, setTaskId] = useState('');
   const [version, setVersion] = useState('V1.0');
   const [comments, setComments] = useState(prefillTask ? `Document for ${prefillTask.name}` : 'Structural design for review.');
+  const [selectedFile, setSelectedFile] = useState<File | undefined>(undefined);
+  const [fileError, setFileError] = useState<string | undefined>(undefined);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [errors, setErrors] = useState<{ name?: string; version?: string; project?: string; task?: string }>({});
   const scopedTasks = useMemo(() => isEmployee ? tasks.filter((task: Task) => isTaskAssignedToCurrentUser(task, currentAccessUser)) : tasks, [isEmployee, tasks, currentAccessUser]);
   const projectOptions = useMemo(() => {
@@ -394,17 +371,106 @@ function UploadDocument({ projects, tasks, systemUsers, prefillTask, currentAcce
     if (tasksForProject.some((task: Task) => task.id === taskId)) return;
     setTaskId('');
   }, [tasksForProject, taskId]);
-  const save = () => {
+  const onAttachFile = () => {
+    fileInputRef.current?.click();
+  };
+  const onFileSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0];
+    event.target.value = '';
+    if (!selected) return;
+    if (selected.size > MAX_UPLOAD_FILE_BYTES) {
+      setSelectedFile(undefined);
+      setFileError('File exceeds the 5 MB limit. Please choose a smaller file.');
+      return;
+    }
+    setFileError(undefined);
+    setSelectedFile(selected);
+    if (!name.trim() || name === 'New_Document.pdf') setName(selected.name);
+  };
+  const readBase64WithProgress = async (file: File): Promise<string> => {
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onprogress = (progressEvent: ProgressEvent<FileReader>) => {
+        if (!progressEvent.lengthComputable) return;
+        const percent = Math.round((progressEvent.loaded / progressEvent.total) * 90);
+        setUploadProgress(percent);
+      };
+      reader.onerror = () => reject(new Error('Could not read selected file.'));
+      reader.onload = () => {
+        const value = reader.result;
+        if (typeof value !== 'string') {
+          reject(new Error('Could not convert file to base64.'));
+          return;
+        }
+        const commaIndex = value.indexOf(',');
+        setUploadProgress(90);
+        resolve(commaIndex >= 0 ? value.slice(commaIndex + 1) : value);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+  const save = async () => {
     const project = projectOptions.find((item: Project) => item.id === projectId);
     const selectedTask = tasksForProject.find((item: Task) => item.id === taskId);
     const nextErrors = { name: name.trim() ? undefined : 'Document name is required.', version: version.trim() ? undefined : 'Version is required.', project: project ? undefined : 'Select a project.', task: selectedTask ? undefined : 'Select a task.' };
     setErrors(nextErrors);
     if (nextErrors.name || nextErrors.version || nextErrors.project || nextErrors.task || !project || !selectedTask) return;
-    onCreate({ id: `doc-${Date.now()}`, name, documentCode: `doc-${Date.now()}`, version, project: project.name, projectId: project.id, task: selectedTask.name, taskId: selectedTask.id, uploadedBy: currentAccessUser?.fullName ?? systemUsers[0]?.fullName ?? 'Unassigned', date: new Date().toISOString(), status: 'Submitted', size: '1.0', url: 'https://example.com/documents/new-document', comments, isActive: true });
+    if (!selectedFile) {
+      setFileError('Select a file before uploading.');
+      return;
+    }
+    if (selectedFile.size > MAX_UPLOAD_FILE_BYTES) {
+      setFileError('File exceeds the 5 MB limit. Please choose a smaller file.');
+      return;
+    }
+    setFileError(undefined);
+    setIsUploading(true);
+    setUploadProgress(5);
+    try {
+      const base64Content = await readBase64WithProgress(selectedFile);
+      const fileSizeMB = Number((selectedFile.size / (1024 * 1024)).toFixed(2));
+      const flowResponse = await PowerAutomateUploadService.uploadBase64File({
+        fileNameWithExtension: selectedFile.name,
+        fileContentBase64: base64Content,
+        projectCode: project.code || project.name,
+        taskId: selectedTask.id,
+        documentStatus: 'Submitted',
+      });
+      setUploadProgress(98);
+      const savedDocument = await onCreate({ id: `doc-${Date.now()}`, name: name.trim() || selectedFile.name, documentCode: flowResponse.sharePointFileId, version, project: project.name, projectId: project.id, task: selectedTask.name, taskId: selectedTask.id, uploadedBy: currentAccessUser?.fullName ?? systemUsers[0]?.fullName ?? 'Unassigned', date: new Date().toISOString(), status: 'Submitted', size: String(fileSizeMB), url: flowResponse.sharePointFileUrl, comments, isActive: true });
+      if (savedDocument?.id) {
+        await PowerAutomateUploadService.updateSharePointMetadata({
+          sharePointFileId: flowResponse.sharePointFileId,
+          dataverseDocumentId: savedDocument.id,
+          projectCode: project.code || project.name,
+          documentStatus: 'Submitted',
+        });
+      }
+      setUploadProgress(100);
+      console.log('[CTS DEBUG] upload result', { fileName: selectedFile.name, fileSizeMB, base64Length: base64Content.length, flowResponse: { url: flowResponse.sharePointFileUrl, fileId: flowResponse.sharePointFileId }, savedDocId: savedDocument?.id ?? '', boundProject: project.id, boundTask: selectedTask.id, boundUploadedBy: currentAccessUser?.id ?? '' });
+      toast.success(`Attachment uploaded: ${flowResponse.sharePointFileUrl}`);
+      setSelectedFile(undefined);
+      setComments('');
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : 'Upload failed';
+      toast.error(message);
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(0);
+    }
   };
   const projectPlaceholder = isEmployee && projectOptions.length === 0 ? 'No projects assigned to you' : 'Select a project';
   const taskPlaceholder = !selectedProject ? 'Select a project first' : (tasksForProject.length === 0 ? (isEmployee ? 'No tasks assigned to you for this project' : 'No tasks available for this project') : 'Select a task');
-  return <div className="space-y-4"><InMemoryDataBanner show={HAS_IN_MEMORY_TABLES} message="This app uses generated table hooks for document data." /><Card><CardContent className="grid gap-4 p-6 md:grid-cols-2"><div className="space-y-2"><Label>Project</Label><Select value={projectId} onValueChange={setProjectId} disabled={projectOptions.length === 0}><SelectTrigger><SelectValue placeholder={projectPlaceholder} /></SelectTrigger><SelectContent>{projectOptions.map((item: Project) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select><FieldError message={errors.project} /></div><div className="space-y-2"><Label>Task</Label><Select value={taskId} onValueChange={setTaskId} disabled={!selectedProject || tasksForProject.length === 0}><SelectTrigger><SelectValue placeholder={taskPlaceholder} /></SelectTrigger><SelectContent>{tasksForProject.filter((item: Task) => item.name).map((item: Task) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select><FieldError message={errors.task} /></div><div className="space-y-2"><Label>Document name</Label><Input value={name} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setName(event.target.value)} /><FieldError message={errors.name} /></div><div className="space-y-2"><Label>Version</Label><Input value={version} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setVersion(event.target.value)} /><FieldError message={errors.version} /></div><div className="space-y-2 md:col-span-2"><Label>Comments</Label><Textarea value={comments} onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setComments(event.target.value)} /></div><div className="md:col-span-2"><Button className="w-full" onClick={save} disabled={!selectedProject || tasksForProject.length === 0}><Upload className="h-4 w-4" /> Upload</Button></div></CardContent></Card></div>;
+  const canSubmitUpload = Boolean(selectedProject) && tasksForProject.length > 0 && !fileError && !isUploading;
+  const submitLabel = !selectedFile ? 'Select File' : isUploading ? 'Uploading...' : 'Upload';
+  const onSubmitClick = () => {
+    if (!selectedFile) {
+      onAttachFile();
+      return;
+    }
+    void save();
+  };
+  return <div className="space-y-4"><InMemoryDataBanner show={HAS_IN_MEMORY_TABLES} message="This app uses generated table hooks for document data." /><Card><CardContent className="grid gap-4 p-6 md:grid-cols-2"><div className="space-y-2"><Label>Project</Label><Select value={projectId} onValueChange={setProjectId} disabled={projectOptions.length === 0 || isUploading}><SelectTrigger><SelectValue placeholder={projectPlaceholder} /></SelectTrigger><SelectContent>{projectOptions.map((item: Project) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select><FieldError message={errors.project} /></div><div className="space-y-2"><Label>Task</Label><Select value={taskId} onValueChange={setTaskId} disabled={!selectedProject || tasksForProject.length === 0 || isUploading}><SelectTrigger><SelectValue placeholder={taskPlaceholder} /></SelectTrigger><SelectContent>{tasksForProject.filter((item: Task) => item.name).map((item: Task) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select><FieldError message={errors.task} /></div><div className="space-y-2"><Label>Document name</Label><Input value={name} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setName(event.target.value)} disabled={isUploading} /><FieldError message={errors.name} /></div><div className="space-y-2"><Label>Version</Label><Input value={version} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setVersion(event.target.value)} disabled={isUploading} /><FieldError message={errors.version} /></div><div className="space-y-2 md:col-span-2"><Label>Comments</Label><Textarea value={comments} onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setComments(event.target.value)} disabled={isUploading} /></div><div className="space-y-2 md:col-span-2"><Label>Attachment</Label><input ref={fileInputRef} type="file" accept={UPLOAD_ACCEPTED_EXTENSIONS} className="hidden" onChange={onFileSelected} disabled={isUploading} /><div className="flex flex-wrap items-center gap-2"><Button type="button" variant="outline" onClick={onAttachFile} disabled={isUploading}><Upload className="h-4 w-4" /> Attach File</Button>{selectedFile && <span className="text-sm text-muted-foreground">{selectedFile.name} ({(selectedFile.size / (1024 * 1024)).toFixed(2)} MB)</span>}</div><FieldError message={fileError} /><p className="text-xs text-muted-foreground">Maximum file size: 5 MB. Allowed types: PDF, DOC, DOCX, DWG, PNG, JPG, JPEG, XLSX, ZIP.</p></div><div className="md:col-span-2">{isUploading && <p className="mb-2 text-sm text-muted-foreground">Uploading... {uploadProgress}%</p>}<Button className="w-full" onClick={onSubmitClick} disabled={!canSubmitUpload}><Upload className="h-4 w-4" /> {submitLabel}</Button></div></CardContent></Card></div>;
 }
 function ApprovalCenter({ documents, approvals, role, currentAccessUser, onDecision }: { documents: Doc[]; approvals: Approval[]; role: Role | undefined; currentAccessUser: ManagedUser | undefined; onDecision: (doc: Doc, decision: 'Approved' | 'Rejected', comments: string) => void }) {
   const [selectedDocumentId, setSelectedDocumentId] = useState('');
@@ -429,6 +495,7 @@ function ApprovalCenter({ documents, approvals, role, currentAccessUser, onDecis
 const defaultPermissionsByRole: Record<Role, string[]> = {
   Admin: permissionOptions,
   'Project Manager': ['Create projects', 'Assign tasks'],
+  Lead: ['Upload documents'],
   Employee: ['Upload documents'],
   Approver: ['Review approvals'],
 };
@@ -573,7 +640,7 @@ function DatePickerField({ value, onChange, placeholder }: { value: string; onCh
 function ProjectForm({ mode, item, systemUsers, onCancel, onSave }: { mode: FormMode; item?: Project; systemUsers: ManagedUser[]; onCancel: () => void; onSave: (project: Project) => void }) {
   const managerOptions = getProjectManagerOptions(systemUsers);
   const [name, setName] = useState(item?.name ?? '');
-  const codeDisplay = item?.code ?? 'Auto-generated on save';
+  const codeDisplay = item?.code ?? '—';
   const [managerId, setManagerId] = useState(item?.managerId || managerOptions[0]?.id || 'unassigned');
   const [status, setStatus] = useState<Status>(item?.status ?? 'Planning');
   const [start, setStart] = useState(item?.start ?? '');
@@ -590,7 +657,7 @@ function ProjectForm({ mode, item, systemUsers, onCancel, onSave }: { mode: Form
     if (nextErrors.name || nextErrors.progress || nextErrors.manager) return;
     onSave({ id: item?.id ?? `project-${Date.now()}`, name, code: item?.code, manager: selectedManager?.fullName ?? '', managerId: selectedManager?.id ?? '', managerEmail: selectedManager?.email ?? item?.managerEmail ?? '', status, progress: progressValue, location, start, end, description, isActive: item?.isActive ?? true });
   };
-  return <><DialogHeader><DialogTitle>{mode === 'create' ? 'Add Project' : 'Edit Project'}</DialogTitle><DialogDescription>Create or update project details and manager assignment.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 md:grid-cols-2"><div className="space-y-2"><Label>Project Name</Label><Input value={name} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setName(event.target.value)} /><FieldError message={errors.name} /></div><div className="space-y-2"><Label>Project Code</Label><div className="rounded-md border bg-muted px-3 py-2 text-sm text-muted-foreground">{codeDisplay}</div><p className="text-sm text-muted-foreground">Dataverse assigns the real autonumber when the project is saved.</p></div><div className="space-y-2"><Label>Manager</Label><Select value={managerId} onValueChange={setManagerId}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{managerOptions.filter((person: ManagedUser) => person.id).map((person: ManagedUser) => <SelectItem key={person.id} value={person.id}>{person.fullName}</SelectItem>)}</SelectContent></Select><FieldError message={errors.manager} /></div><div className="space-y-2"><Label>Status</Label><Select value={status} onValueChange={(value: Status) => setStatus(value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{projectStatuses.map((itemStatus: Status) => <SelectItem key={itemStatus} value={itemStatus}>{itemStatus}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label>Start Date</Label><DatePickerField value={start} onChange={setStart} placeholder="Pick start date" /></div><div className="space-y-2"><Label>End Date</Label><DatePickerField value={end} onChange={setEnd} placeholder="Pick end date" /></div><div className="space-y-2"><Label>Location</Label><Input value={location} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setLocation(event.target.value)} /></div><div className="space-y-2"><Label>Progress</Label><Input value={progress} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setProgress(event.target.value)} /><FieldError message={errors.progress} /></div><div className="space-y-2 md:col-span-2"><Label>Description</Label><Textarea value={description} onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setDescription(event.target.value)} /></div></div><DialogFooter><Button variant="outline" onClick={onCancel}>Cancel</Button><Button onClick={save}>Save project</Button></DialogFooter></>;
+  return <><DialogHeader><DialogTitle>{mode === 'create' ? 'Add Project' : 'Edit Project'}</DialogTitle><DialogDescription>Create or update project details and manager assignment.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 md:grid-cols-2"><div className="space-y-2"><Label>Project Name</Label><Input value={name} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setName(event.target.value)} /><FieldError message={errors.name} /></div><div className="space-y-2"><Label>Project Code</Label><div className="rounded-md border bg-muted px-3 py-2 text-sm text-muted-foreground">{codeDisplay}</div></div><div className="space-y-2"><Label>Manager</Label><Select value={managerId} onValueChange={setManagerId}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{managerOptions.filter((person: ManagedUser) => person.id).map((person: ManagedUser) => <SelectItem key={person.id} value={person.id}>{person.fullName}</SelectItem>)}</SelectContent></Select><FieldError message={errors.manager} /></div><div className="space-y-2"><Label>Status</Label><Select value={status} onValueChange={(value: Status) => setStatus(value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{projectStatuses.map((itemStatus: Status) => <SelectItem key={itemStatus} value={itemStatus}>{itemStatus}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label>Start Date</Label><DatePickerField value={start} onChange={setStart} placeholder="Pick start date" /></div><div className="space-y-2"><Label>End Date</Label><DatePickerField value={end} onChange={setEnd} placeholder="Pick end date" /></div><div className="space-y-2"><Label>Location</Label><Input value={location} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setLocation(event.target.value)} /></div><div className="space-y-2"><Label>Progress</Label><Input value={progress} onChange={(event: React.ChangeEvent<HTMLInputElement>) => setProgress(event.target.value)} /><FieldError message={errors.progress} /></div><div className="space-y-2 md:col-span-2"><Label>Description</Label><Textarea value={description} onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setDescription(event.target.value)} /></div></div><DialogFooter><Button variant="outline" onClick={onCancel}>Cancel</Button><Button onClick={save}>Save project</Button></DialogFooter></>;
 }
 
 function TaskForm({ mode, item, projects, systemUsers, onCancel, onSave }: { mode: FormMode; item?: Task; projects: Project[]; systemUsers: ManagedUser[]; onCancel: () => void; onSave: (task: Task) => void }) {
@@ -782,7 +849,7 @@ export default function HomePage() {
     setScreen('Project Workspace');
   };
   const decideDocument = (doc: Doc, decision: 'Approved' | 'Rejected', comments: string) => { if (currentUserAccess.role !== 'Approver' && currentUserAccess.role !== 'Admin') { toast.error('You do not have permission to approve documents'); return; } const relatedTask = tasks.find((task: Task) => task.id === doc.taskId || task.name === doc.task); const nextDocumentStatus: Status = decision === 'Approved' ? 'Approved' : 'Revision Required'; const nextTaskStatus: Status = decision === 'Approved' ? 'Approved' : 'In Progress'; const approvalInput: Omit<CTSDocumentApproval, 'id'> = { approvalName: `${decision} - ${doc.name}`, document: { id: doc.id, documentName: doc.name }, approver: { id: currentAccessUser?.id ?? 'current-user', fullName: currentAccessUser?.fullName ?? 'Current user' }, decisionKey: decision, comments, decisionDate: new Date().toISOString(), isActive: true }; void createApproval.mutateAsync(approvalInput).then((createdApproval: CTSDocumentApproval) => { const updates: Promise<unknown>[] = [updateDocument.mutateAsync({ id: doc.id, changedFields: { statusKey: documentStatusKey(nextDocumentStatus) } })]; if (relatedTask) updates.push(updateTask.mutateAsync({ id: relatedTask.id, changedFields: toCTSTaskStatusUpdate(relatedTask, nextTaskStatus) })); return Promise.all(updates).then(() => createdApproval); }).then((createdApproval: CTSDocumentApproval) => { setApprovals((current: Approval[]) => [fromCTSDocumentApproval(createdApproval), ...current]); setDocuments((current: Doc[]) => current.map((item: Doc) => item.id === doc.id ? { ...item, status: nextDocumentStatus } : item)); if (relatedTask) setTasks((current: Task[]) => current.map((item: Task) => item.id === relatedTask.id ? { ...item, status: nextTaskStatus } : item)); refetchAllRecords(); toast.success(decision === 'Approved' ? 'Document approved' : 'Document rejected'); }).catch(() => toast.error('Approval decision could not be saved')); };
-  const submitTaskForApproval = (task: Task) => { if (currentUserAccess.role !== 'Employee' && currentUserAccess.role !== 'Project Manager' && currentUserAccess.role !== 'Admin') { toast.error('You do not have permission to submit tasks'); return; } if (!hasSubmittedDocumentForTask(task, documents)) { toast.warning('Upload a submitted document before submitting this task.'); return; } const nextTask = { ...task, status: 'Submitted' as Status }; void updateTask.mutateAsync({ id: task.id, changedFields: toCTSTaskStatusUpdate(task, 'Submitted') }).then(() => { setTasks((current: Task[]) => current.map((item: Task) => item.id === task.id ? nextTask : item)); refetchAllRecords(); toast.success('Task submitted for approval'); }).catch(() => toast.error('Task could not be submitted')); };
+  const submitTaskForApproval = (task: Task) => { if (currentUserAccess.role !== 'Employee' && currentUserAccess.role !== 'Lead' && currentUserAccess.role !== 'Project Manager' && currentUserAccess.role !== 'Admin') { toast.error('You do not have permission to submit tasks'); return; } if (!hasSubmittedDocumentForTask(task, documents)) { toast.warning('Upload a submitted document before submitting this task.'); return; } const nextTask = { ...task, status: 'Submitted' as Status }; void updateTask.mutateAsync({ id: task.id, changedFields: toCTSTaskStatusUpdate(task, 'Submitted') }).then(() => { setTasks((current: Task[]) => current.map((item: Task) => item.id === task.id ? nextTask : item)); refetchAllRecords(); toast.success('Task submitted for approval'); }).catch(() => toast.error('Task could not be submitted')); };
   const openUploadForTask = (task: Task) => { setUploadPrefillTask(task); window.history.replaceState(null, '', '#/upload-document'); setScreen('Upload Document'); };
   useEffect(() => {
     const requestedScreen = routeToScreen(window.location.hash);
@@ -818,10 +885,39 @@ export default function HomePage() {
     const message = error instanceof Error && error.message ? error.message : 'Task could not be saved';
     toast.error(message);
   }); };
-  const saveDocument = (doc: Doc) => { if (!isActiveAdmin(currentAccessUser) && currentUserAccess.role !== 'Project Manager' && !currentUserAccess.permissions.uploadDocuments) { toast.error('You do not have permission to upload documents'); return; } const persist = dialog?.mode === 'edit' ? updateDocument.mutateAsync({ id: doc.id, changedFields: toCTSDocument(doc, allProjects, allTasks, systemUsers) }) : createDocument.mutateAsync(toCTSDocument(doc, allProjects, allTasks, systemUsers)); void persist.then(() => { setDocuments((current: Doc[]) => dialog?.mode === 'edit' ? current.map((item: Doc) => item.id === doc.id ? doc : item) : [doc, ...current]); closeDialog(); refetchAllRecords(); toast.success('Document saved'); }).catch((error: unknown) => {
-    const message = error instanceof Error && error.message ? error.message : 'Document could not be saved';
-    toast.error(message);
-  }); };
+  const saveDocument = async (doc: Doc): Promise<CTSDocument | void> => {
+    if (!isActiveAdmin(currentAccessUser) && currentUserAccess.role !== 'Project Manager' && !currentUserAccess.permissions.uploadDocuments) {
+      toast.error('You do not have permission to upload documents');
+      return;
+    }
+    try {
+      const persist = async (includeIsActive: boolean): Promise<CTSDocument> => dialog?.mode === 'edit'
+        ? await updateDocument.mutateAsync({ id: doc.id, changedFields: toCTSDocument(doc, allProjects, allTasks, systemUsers, includeIsActive) })
+        : await createDocument.mutateAsync(toCTSDocument(doc, allProjects, allTasks, systemUsers, includeIsActive));
+      let savedDocument: CTSDocument;
+      try {
+        savedDocument = await persist(documentIsActiveSupported);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '';
+        if (documentIsActiveSupported && message.includes("invalid property: 'isActive'")) {
+          documentIsActiveSupported = false;
+          savedDocument = await persist(false);
+        } else {
+          throw error;
+        }
+      }
+      const nextDocument = fromCTSDocument(savedDocument, allProjects, allTasks);
+      setDocuments((current: Doc[]) => dialog?.mode === 'edit' ? current.map((item: Doc) => item.id === doc.id ? nextDocument : item) : [nextDocument, ...current]);
+      closeDialog();
+      refetchAllRecords();
+      toast.success('Document saved');
+      return savedDocument;
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : 'Document could not be saved';
+      toast.error(message);
+      throw error;
+    }
+  };
   const confirmDelete = () => {
     if (!deleteTarget) return;
     const action = deleteTarget.type === 'project' ? updateProject.mutateAsync({ id: deleteTarget.id, changedFields: archivedProjectFields }) : deleteTarget.type === 'task' ? updateTask.mutateAsync({ id: deleteTarget.id, changedFields: archivedTaskFields }) : updateDocument.mutateAsync({ id: deleteTarget.id, changedFields: archivedDocumentFields });
