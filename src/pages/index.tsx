@@ -19,7 +19,7 @@ import type { CTSDocument, CTSDocumentStatusKey } from '@/generated/models/cts-d
 import type { CTSDocumentApproval } from '@/generated/models/cts-document-approval-model';
 import { useUser } from '@/hooks/use-user';
 import { useCurrentUserRole } from '@/contexts/current-user-role-context';
-import { PowerAutomateUploadService } from '@/features/document-upload/PowerAutomateUploadService';
+import { SharePointUploadService } from '@/features/document-upload/SharePointUploadService';
 import { getAccessibleScreens as getAccessibleScreensByRole, getRoleScopedDocuments as getRoleScopedDocumentsByRole, getRoleScopedProjects as getRoleScopedProjectsByRole, getRoleScopedTasks as getRoleScopedTasksByRole, isTaskAssignedToCurrentUser as isTaskAssignedToCurrentUserByRole, isSamePerson as isSamePersonByRole, normalizeGuid as normalizeGuidValue, taskMatchesProject as taskMatchesProjectByRole, type AccessDocument, type AccessProject, type AccessTask, type AccessUser } from '@/features/access/access-control';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -387,28 +387,6 @@ function UploadDocument({ projects, tasks, systemUsers, prefillTask, currentAcce
     setSelectedFile(selected);
     if (!name.trim() || name === 'New_Document.pdf') setName(selected.name);
   };
-  const readBase64WithProgress = async (file: File): Promise<string> => {
-    return await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onprogress = (progressEvent: ProgressEvent<FileReader>) => {
-        if (!progressEvent.lengthComputable) return;
-        const percent = Math.round((progressEvent.loaded / progressEvent.total) * 90);
-        setUploadProgress(percent);
-      };
-      reader.onerror = () => reject(new Error('Could not read selected file.'));
-      reader.onload = () => {
-        const value = reader.result;
-        if (typeof value !== 'string') {
-          reject(new Error('Could not convert file to base64.'));
-          return;
-        }
-        const commaIndex = value.indexOf(',');
-        setUploadProgress(90);
-        resolve(commaIndex >= 0 ? value.slice(commaIndex + 1) : value);
-      };
-      reader.readAsDataURL(file);
-    });
-  };
   const save = async () => {
     const project = projectOptions.find((item: Project) => item.id === projectId);
     const selectedTask = tasksForProject.find((item: Task) => item.id === taskId);
@@ -427,28 +405,25 @@ function UploadDocument({ projects, tasks, systemUsers, prefillTask, currentAcce
     setIsUploading(true);
     setUploadProgress(5);
     try {
-      const base64Content = await readBase64WithProgress(selectedFile);
+      const blob = new Blob([selectedFile], { type: selectedFile.type || 'application/octet-stream' });
       const fileSizeMB = Number((selectedFile.size / (1024 * 1024)).toFixed(2));
-      const flowResponse = await PowerAutomateUploadService.uploadBase64File({
-        fileNameWithExtension: selectedFile.name,
-        fileContentBase64: base64Content,
-        projectCode: project.code || project.name,
-        taskId: selectedTask.id,
+      setUploadProgress(35);
+      const sharePointResponse = await SharePointUploadService.uploadFile(selectedFile, {
+        title: name.trim() || selectedFile.name,
+        description: comments,
+        taskReference: selectedTask.id,
+        documentType: 'Other',
         documentStatus: 'Submitted',
+        projectCode: project.code || project.name,
+        dataverseDocumentId: '',
+        remarks: comments,
+        uploadedByEmail: currentAccessUser?.email || undefined,
       });
       setUploadProgress(98);
-      const savedDocument = await onCreate({ id: `doc-${Date.now()}`, name: name.trim() || selectedFile.name, documentCode: flowResponse.sharePointFileId, version, project: project.name, projectId: project.id, task: selectedTask.name, taskId: selectedTask.id, uploadedBy: currentAccessUser?.fullName ?? systemUsers[0]?.fullName ?? 'Unassigned', date: new Date().toISOString(), status: 'Submitted', size: String(fileSizeMB), url: flowResponse.sharePointFileUrl, comments, isActive: true });
-      if (savedDocument?.id) {
-        await PowerAutomateUploadService.updateSharePointMetadata({
-          sharePointFileId: flowResponse.sharePointFileId,
-          dataverseDocumentId: savedDocument.id,
-          projectCode: project.code || project.name,
-          documentStatus: 'Submitted',
-        });
-      }
+      const savedDocument = await onCreate({ id: `doc-${Date.now()}`, name: name.trim() || selectedFile.name, documentCode: sharePointResponse.fileId, version, project: project.name, projectId: project.id, task: selectedTask.name, taskId: selectedTask.id, uploadedBy: currentAccessUser?.fullName ?? systemUsers[0]?.fullName ?? 'Unassigned', date: new Date().toISOString(), status: 'Submitted', size: String(fileSizeMB), url: sharePointResponse.fileUrl, comments, isActive: true });
       setUploadProgress(100);
-      console.log('[CTS DEBUG] upload result', { fileName: selectedFile.name, fileSizeMB, base64Length: base64Content.length, flowResponse: { url: flowResponse.sharePointFileUrl, fileId: flowResponse.sharePointFileId }, savedDocId: savedDocument?.id ?? '', boundProject: project.id, boundTask: selectedTask.id, boundUploadedBy: currentAccessUser?.id ?? '' });
-      toast.success(`Attachment uploaded: ${flowResponse.sharePointFileUrl}`);
+      console.log('[CTS DEBUG] upload result', { fileName: selectedFile.name, blobSize: blob.size, contentType: blob.type, graphStatus: 'n/a-sharepoint-connector', webUrl: sharePointResponse.fileUrl, fileId: sharePointResponse.fileId, savedDocId: savedDocument?.id ?? '', boundProject: project.id, boundTask: selectedTask.id, boundUploadedBy: currentAccessUser?.id ?? '' });
+      toast.success(`Attachment uploaded: ${sharePointResponse.fileUrl}`);
       setSelectedFile(undefined);
       setComments('');
     } catch (error) {

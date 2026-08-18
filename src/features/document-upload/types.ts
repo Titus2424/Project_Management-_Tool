@@ -47,10 +47,15 @@ export interface ChoiceOption {
  * SharePoint library is added to the Code App.
  */
 export const SHAREPOINT_LIBRARY_NAME = "ProjectDocuments";
+const env = import.meta.env as Record<string, string | undefined>;
 export const SHAREPOINT_SITE_URL =
+  env.dmeo_ProjectDocumentLibrary ??
+  env.VITE_dmeo_ProjectDocumentLibrary ??
   "https://myui.sharepoint.com/sites/Trial_Site";
+export const SHAREPOINT_LIBRARY_FROM_ENV =
+  env.dmeo_ProjectDocLibrary ?? env.VITE_dmeo_ProjectDocLibrary;
 
-export const MAX_FILE_SIZE_MB = 4;
+export const MAX_FILE_SIZE_MB = 5;
 export const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
 export const ALLOWED_FILE_EXTENSIONS = [

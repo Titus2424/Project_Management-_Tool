@@ -1,11 +1,12 @@
 import { getContext } from "@microsoft/power-apps/app";
 import { getClient } from "@microsoft/power-apps/data";
-import { executePluginAsync } from "@microsoft/power-apps/dist/internal/plugins/PluginBridge.js";
+import { executePluginAsync } from "@microsoft/power-apps/internal/plugins";
 
 import { dataSourcesInfo } from "../../../.power/appschemas/dataSourcesInfo";
 import {
   ALLOWED_FILE_EXTENSIONS,
   SHAREPOINT_COLUMNS,
+  SHAREPOINT_LIBRARY_FROM_ENV,
   SHAREPOINT_LIBRARY_NAME,
   SHAREPOINT_SITE_URL,
   type CreateFileResponse,
@@ -18,7 +19,8 @@ import {
 } from "./types";
 
 const SHAREPOINT_API_ID = "shared_sharepointonline";
-const SHAREPOINT_DATA_SOURCE_NAME = SHAREPOINT_LIBRARY_NAME;
+const SHAREPOINT_DATA_SOURCE_NAME =
+  SHAREPOINT_LIBRARY_FROM_ENV || SHAREPOINT_LIBRARY_NAME;
 const OFFICE365_USERS_DATA_SOURCE_NAME = "Office365Users";
 const OFFICE365_USERS_PROFILE_OPERATION = "MyProfile_V2";
 
@@ -171,7 +173,7 @@ export class SharePointUploadService {
   }
 
   /**
-   * Uploads one <=4 MB file in one SharePoint CreateFile request.
+   * Uploads one <=5 MB file in one SharePoint CreateFile request.
    *
    * IMPORTANT: the public @microsoft/power-apps executeAsync API is used for
    * connector operations generally, but raw binary SharePoint CreateFile
