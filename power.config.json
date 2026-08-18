@@ -24,6 +24,22 @@
       "bypassConsent": false,
       "apiTier": "Premium",
       "isCustomApiConnection": false
+    },
+    "0be17d28-6f8e-4193-910b-0b409e265f75": {
+      "id": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline",
+      "displayName": "SharePoint",
+      "dataSources": [
+        "projectdocuments"
+      ],
+      "dataSets": {
+        "https://myui.sharepoint.com/sites/Trial_Site": {
+          "dataSources": {
+            "projectdocuments": {
+              "tableName": "ProjectDocuments"
+            }
+          }
+        }
+      }
     }
   },
   "databaseReferences": {

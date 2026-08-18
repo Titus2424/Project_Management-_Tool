@@ -401,6 +401,11 @@ function UploadDocument({ projects, tasks, systemUsers, prefillTask, currentAcce
       setFileError('File exceeds the 5 MB limit. Please choose a smaller file.');
       return;
     }
+    const projectCode = (project.code ?? '').trim();
+    if (!projectCode) {
+      toast.error('Selected project does not have a Project Code. Update the project record before uploading.');
+      return;
+    }
     setFileError(undefined);
     setIsUploading(true);
     setUploadProgress(5);
@@ -414,15 +419,36 @@ function UploadDocument({ projects, tasks, systemUsers, prefillTask, currentAcce
         taskReference: selectedTask.id,
         documentType: 'Other',
         documentStatus: 'Submitted',
-        projectCode: project.code || project.name,
+        projectCode,
         dataverseDocumentId: '',
         remarks: comments,
         uploadedByEmail: currentAccessUser?.email || undefined,
       });
       setUploadProgress(98);
       const savedDocument = await onCreate({ id: `doc-${Date.now()}`, name: name.trim() || selectedFile.name, documentCode: sharePointResponse.fileId, version, project: project.name, projectId: project.id, task: selectedTask.name, taskId: selectedTask.id, uploadedBy: currentAccessUser?.fullName ?? systemUsers[0]?.fullName ?? 'Unassigned', date: new Date().toISOString(), status: 'Submitted', size: String(fileSizeMB), url: sharePointResponse.fileUrl, comments, isActive: true });
+      if (!savedDocument?.id) throw new Error('Dataverse document save returned no document id.');
+      let spUpdateStatus = 'pending';
+      try {
+        await SharePointUploadService.updateFileMetadata(sharePointResponse.itemId, {
+          title: name.trim() || selectedFile.name,
+          description: comments,
+          taskReference: selectedTask.id,
+          documentType: 'Other',
+          documentStatus: 'Submitted',
+          projectCode,
+          dataverseDocumentId: savedDocument.id,
+          remarks: comments,
+          uploadedByEmail: currentAccessUser?.email || undefined,
+        });
+        spUpdateStatus = 'updated';
+      } catch (metadataError) {
+        const metadataMessage = metadataError instanceof Error && metadataError.message ? metadataError.message : 'Unknown metadata update failure';
+        spUpdateStatus = `failed:itemId=${sharePointResponse.itemId}`;
+        console.error('[CTS DEBUG] sharepoint metadata update failure', { itemId: sharePointResponse.itemId, projectCode, dataverseDocumentId: savedDocument.id, message: metadataMessage });
+        throw new Error(`File upload and Dataverse save succeeded, but SharePoint metadata update failed for itemId ${sharePointResponse.itemId}. ${metadataMessage}`);
+      }
       setUploadProgress(100);
-      console.log('[CTS DEBUG] upload result', { fileName: selectedFile.name, blobSize: blob.size, contentType: blob.type, graphStatus: 'n/a-sharepoint-connector', webUrl: sharePointResponse.fileUrl, fileId: sharePointResponse.fileId, savedDocId: savedDocument?.id ?? '', boundProject: project.id, boundTask: selectedTask.id, boundUploadedBy: currentAccessUser?.id ?? '' });
+      console.log('[CTS DEBUG] upload result', { fileName: selectedFile.name, createResponseKeys: sharePointResponse.createResponseKeys, lookupResponseKeys: sharePointResponse.lookupResponseKeys, resolvedFileId: sharePointResponse.fileId, resolvedFileUrl: sharePointResponse.fileUrl, blobSize: blob.size, contentType: blob.type, savedDocId: savedDocument.id, projectCode, spUpdateStatus, boundProject: project.id, boundTask: selectedTask.id, boundUploadedBy: currentAccessUser?.id ?? '' });
       toast.success(`Attachment uploaded: ${sharePointResponse.fileUrl}`);
       setSelectedFile(undefined);
       setComments('');
@@ -686,60 +712,63 @@ function InactiveRecordsScreen({ projects, tasks, documents, approvals, onRestor
   return <div className="space-y-4"><InMemoryDataBanner show={HAS_IN_MEMORY_TABLES} message="Restore sets Is Active back to Yes and returns records to normal screens." /><div className="grid gap-4 md:grid-cols-4"><KpiCard title="Inactive Projects" value={String(inactiveProjects.length)} icon={<BriefcaseBusiness className="h-5 w-5" />} /><KpiCard title="Inactive Tasks" value={String(inactiveTasks.length)} icon={<ClipboardList className="h-5 w-5" />} /><KpiCard title="Inactive Documents" value={String(inactiveDocuments.length)} icon={<FileText className="h-5 w-5" />} /><KpiCard title="Inactive Approvals" value={String(inactiveApprovals.length)} icon={<CheckCircle2 className="h-5 w-5" />} /></div><Card><CardHeader><div className="flex items-center justify-between gap-4"><CardTitle>Restore inactive records</CardTitle><Select value={recordType} onValueChange={(value: 'projects' | 'tasks' | 'documents' | 'approvals') => setRecordType(value)}><SelectTrigger className="w-56"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="projects">Projects</SelectItem><SelectItem value="tasks">Tasks</SelectItem><SelectItem value="documents">Documents</SelectItem><SelectItem value="approvals">Document approvals</SelectItem></SelectContent></Select></div></CardHeader><CardContent className="p-0">{recordType === 'projects' && <Table><TableHeader><TableRow><TableHead>Project</TableHead><TableHead>Manager</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{inactiveProjects.map((project: Project) => <TableRow key={project.id}><TableCell className="font-medium">{project.name}</TableCell><TableCell>{project.manager || 'Unassigned'}</TableCell><TableCell><StatusBadge status={project.status} /></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={() => onRestore('project', project.id)}><RotateCcw className="h-4 w-4" /> Restore</Button></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'tasks' && <Table><TableHeader><TableRow><TableHead>Task</TableHead><TableHead>Project</TableHead><TableHead>Assigned To</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{inactiveTasks.map((task: Task) => <TableRow key={task.id}><TableCell className="font-medium">{task.name}</TableCell><TableCell>{task.project}</TableCell><TableCell>{task.assignedTo}</TableCell><TableCell><StatusBadge status={task.status} /></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={() => onRestore('task', task.id)}><RotateCcw className="h-4 w-4" /> Restore</Button></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'documents' && <Table><TableHeader><TableRow><TableHead>Document</TableHead><TableHead>Project</TableHead><TableHead>Task</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{inactiveDocuments.map((doc: Doc) => <TableRow key={doc.id}><TableCell className="font-medium">{doc.name}</TableCell><TableCell>{doc.project}</TableCell><TableCell>{doc.task}</TableCell><TableCell><StatusBadge status={doc.status} /></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={() => onRestore('document', doc.id)}><RotateCcw className="h-4 w-4" /> Restore</Button></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'approvals' && <Table><TableHeader><TableRow><TableHead>Approval</TableHead><TableHead>Document</TableHead><TableHead>Approver</TableHead><TableHead>Decision</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{inactiveApprovals.map((approval: Approval) => <TableRow key={approval.id}><TableCell className="font-medium">{approval.name}</TableCell><TableCell>{approval.documentName}</TableCell><TableCell>{approval.approver}</TableCell><TableCell><StatusBadge status={approval.decision} /></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={() => onRestore('approval', approval.id)}><RotateCcw className="h-4 w-4" /> Restore</Button></TableCell></TableRow>)}</TableBody></Table>}</CardContent></Card></div>;
 }
 
-function DataRepairScreen({ projects, tasks, documents, systemUsers, onRepairTask, onRepairDocument, onRepairProject }: { projects: Project[]; tasks: Task[]; documents: Doc[]; systemUsers: ManagedUser[]; onRepairTask: (taskId: string, projectId: string, assignedToId: string) => void; onRepairDocument: (docId: string, projectId: string, taskId: string, uploadedById: string) => void; onRepairProject: (projectId: string, managerId: string, managerEmail: string) => void }) {
-  const [recordType, setRecordType] = useState<'tasks' | 'documents' | 'projects'>('tasks');
-  
-  const tasksWithBlankProject = tasks.filter((task: Task) => !task.projectId);
-  const tasksWithBlankAssignee = tasks.filter((task: Task) => !task.assignedToId);
+function DataRepairScreen({ projects, tasks, documents, systemUsers, onRepairTask, onRepairDocument, onRepairProject, onRelinkSharePoint }: { projects: Project[]; tasks: Task[]; documents: Doc[]; systemUsers: ManagedUser[]; onRepairTask: (taskId: string, projectId: string, assignedToId: string) => void; onRepairDocument: (docId: string, projectId: string, taskId: string, uploadedById: string) => void; onRepairProject: (projectId: string, managerId: string, managerEmail: string) => void; onRelinkSharePoint: () => Promise<{ relinked: number; failed: number; skipped: number }> }) {
+  const [recordType, setRecordType] = useState<'tasks' | 'documents' | 'projects' | 'sharepoint-links'>('tasks');
+  const [isApplying, setIsApplying] = useState(false);
+  const [sharePointRepairStats, setSharePointRepairStats] = useState<{ relinked: number; failed: number; skipped: number } | null>(null);
   const tasksNeedingRepair = tasks.filter((task: Task) => !task.projectId || !task.assignedToId);
-  
   const documentsWithBlankLookups = documents.filter((doc: Doc) => !doc.projectId || !doc.taskId);
-  
   const projectsWithBlankManager = projects.filter((project: Project) => !project.managerId);
-  
+  const sharePointRelinkCandidates = documents.filter((doc: Doc) => Boolean(doc.url) && doc.url.includes('sharepoint.com'));
   const [selectedRepairs, setSelectedRepairs] = useState<Record<string, { projectId?: string; taskId?: string; assignedToId?: string; uploadedById?: string; managerId?: string; managerEmail?: string }>>({});
-  
   const toggleSelection = (id: string, field: string, value: string) => {
     setSelectedRepairs((prev: Record<string, { projectId?: string; taskId?: string; assignedToId?: string; uploadedById?: string; managerId?: string; managerEmail?: string }>) => ({ ...prev, [id]: { ...(prev[id] || {}), [field]: value } }));
   };
-  
-  const repairSelected = () => {
-    if (recordType === 'tasks') {
-      let repaired = 0;
-      tasksNeedingRepair.forEach((task: Task) => {
-        const repair = selectedRepairs[task.id];
-        if (repair?.projectId && repair?.assignedToId) {
-          onRepairTask(task.id, repair.projectId, repair.assignedToId);
-          repaired++;
-        }
-      });
-      toast.success(`Repaired ${repaired} task(s)`);
-    } else if (recordType === 'documents') {
-      let repaired = 0;
-      documentsWithBlankLookups.forEach((doc: Doc) => {
-        const repair = selectedRepairs[doc.id];
-        if (repair?.projectId && repair?.taskId && repair?.uploadedById) {
-          onRepairDocument(doc.id, repair.projectId, repair.taskId, repair.uploadedById);
-          repaired++;
-        }
-      });
-      toast.success(`Repaired ${repaired} document(s)`);
-    } else if (recordType === 'projects') {
-      let repaired = 0;
-      projectsWithBlankManager.forEach((project: Project) => {
-        const repair = selectedRepairs[project.id];
-        if (repair?.managerId) {
-          const manager = systemUsers.find((u: ManagedUser) => u.id === repair.managerId);
-          onRepairProject(project.id, repair.managerId, manager?.email ?? '');
-          repaired++;
-        }
-      });
-      toast.success(`Repaired ${repaired} project(s)`);
+  const repairSelected = async () => {
+    setIsApplying(true);
+    try {
+      if (recordType === 'tasks') {
+        let repaired = 0;
+        tasksNeedingRepair.forEach((task: Task) => {
+          const repair = selectedRepairs[task.id];
+          if (repair?.projectId && repair?.assignedToId) {
+            onRepairTask(task.id, repair.projectId, repair.assignedToId);
+            repaired++;
+          }
+        });
+        toast.success(`Repaired ${repaired} task(s)`);
+      } else if (recordType === 'documents') {
+        let repaired = 0;
+        documentsWithBlankLookups.forEach((doc: Doc) => {
+          const repair = selectedRepairs[doc.id];
+          if (repair?.projectId && repair?.taskId && repair?.uploadedById) {
+            onRepairDocument(doc.id, repair.projectId, repair.taskId, repair.uploadedById);
+            repaired++;
+          }
+        });
+        toast.success(`Repaired ${repaired} document(s)`);
+      } else if (recordType === 'projects') {
+        let repaired = 0;
+        projectsWithBlankManager.forEach((project: Project) => {
+          const repair = selectedRepairs[project.id];
+          if (repair?.managerId) {
+            const manager = systemUsers.find((u: ManagedUser) => u.id === repair.managerId);
+            onRepairProject(project.id, repair.managerId, manager?.email ?? '');
+            repaired++;
+          }
+        });
+        toast.success(`Repaired ${repaired} project(s)`);
+      } else {
+        const result = await onRelinkSharePoint();
+        setSharePointRepairStats(result);
+        toast.success(`SharePoint relink complete. Re-linked: ${result.relinked}, Failed: ${result.failed}, Skipped: ${result.skipped}`);
+      }
+      setSelectedRepairs({});
+    } finally {
+      setIsApplying(false);
     }
-    setSelectedRepairs({});
   };
-  
-  return <div className="space-y-4"><InMemoryDataBanner show={HAS_IN_MEMORY_TABLES} message="Data Repair fixes blank lookup columns in Dataverse by setting the correct IDs. This is needed for records saved before the lookup write fix." /><div className="grid gap-4 md:grid-cols-3"><KpiCard title="Tasks needing repair" value={String(tasksNeedingRepair.length)} icon={<ClipboardList className="h-5 w-5" />} /><KpiCard title="Documents needing repair" value={String(documentsWithBlankLookups.length)} icon={<FileText className="h-5 w-5" />} /><KpiCard title="Projects needing repair" value={String(projectsWithBlankManager.length)} icon={<BriefcaseBusiness className="h-5 w-5" />} /></div><Card><CardHeader><div className="flex items-center justify-between gap-4"><CardTitle>Repair blank lookup columns</CardTitle><div className="flex gap-2"><Select value={recordType} onValueChange={(value: 'tasks' | 'documents' | 'projects') => setRecordType(value)}><SelectTrigger className="w-56"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="tasks">Tasks</SelectItem><SelectItem value="documents">Documents</SelectItem><SelectItem value="projects">Projects</SelectItem></SelectContent></Select><Button onClick={repairSelected}>Apply Repairs</Button></div></div></CardHeader><CardContent className="p-0">{recordType === 'tasks' && <Table><TableHeader><TableRow><TableHead>Task</TableHead><TableHead>Missing Project?</TableHead><TableHead>Select Project</TableHead><TableHead>Missing Assignee?</TableHead><TableHead>Select Assignee</TableHead></TableRow></TableHeader><TableBody>{tasksNeedingRepair.map((task: Task) => <TableRow key={task.id}><TableCell className="font-medium">{task.name}</TableCell><TableCell>{!task.projectId ? <Badge variant="destructive">Missing</Badge> : <Badge variant="outline">OK</Badge>}</TableCell><TableCell><Select value={selectedRepairs[task.id]?.projectId ?? ''} onValueChange={(value: string) => toggleSelection(task.id, 'projectId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select project..." /></SelectTrigger><SelectContent>{projects.map((p: Project) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent></Select></TableCell><TableCell>{!task.assignedToId ? <Badge variant="destructive">Missing</Badge> : <Badge variant="outline">OK</Badge>}</TableCell><TableCell><Select value={selectedRepairs[task.id]?.assignedToId ?? ''} onValueChange={(value: string) => toggleSelection(task.id, 'assignedToId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select employee..." /></SelectTrigger><SelectContent>{systemUsers.map((u: ManagedUser) => <SelectItem key={u.id} value={u.id}>{u.fullName}</SelectItem>)}</SelectContent></Select></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'documents' && <Table><TableHeader><TableRow><TableHead>Document</TableHead><TableHead>Select Project</TableHead><TableHead>Select Task</TableHead><TableHead>Select Uploaded By</TableHead></TableRow></TableHeader><TableBody>{documentsWithBlankLookups.map((doc: Doc) => <TableRow key={doc.id}><TableCell className="font-medium">{doc.name}</TableCell><TableCell><Select value={selectedRepairs[doc.id]?.projectId ?? ''} onValueChange={(value: string) => toggleSelection(doc.id, 'projectId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select project..." /></SelectTrigger><SelectContent>{projects.map((p: Project) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent></Select></TableCell><TableCell><Select value={selectedRepairs[doc.id]?.taskId ?? ''} onValueChange={(value: string) => toggleSelection(doc.id, 'taskId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select task..." /></SelectTrigger><SelectContent>{tasks.map((t: Task) => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}</SelectContent></Select></TableCell><TableCell><Select value={selectedRepairs[doc.id]?.uploadedById ?? ''} onValueChange={(value: string) => toggleSelection(doc.id, 'uploadedById', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select user..." /></SelectTrigger><SelectContent>{systemUsers.map((u: ManagedUser) => <SelectItem key={u.id} value={u.id}>{u.fullName}</SelectItem>)}</SelectContent></Select></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'projects' && <Table><TableHeader><TableRow><TableHead>Project</TableHead><TableHead>Current Manager</TableHead><TableHead>Select Manager</TableHead></TableRow></TableHeader><TableBody>{projectsWithBlankManager.map((project: Project) => <TableRow key={project.id}><TableCell className="font-medium">{project.name}</TableCell><TableCell>{project.manager || 'Unassigned'}</TableCell><TableCell><Select value={selectedRepairs[project.id]?.managerId ?? ''} onValueChange={(value: string) => toggleSelection(project.id, 'managerId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select manager..." /></SelectTrigger><SelectContent>{systemUsers.filter((u: ManagedUser) => u.role === 'Admin' || u.role === 'Project Manager').map((u: ManagedUser) => <SelectItem key={u.id} value={u.id}>{u.fullName}</SelectItem>)}</SelectContent></Select></TableCell></TableRow>)}</TableBody></Table>}</CardContent></Card></div>;
+  return <div className="space-y-4"><InMemoryDataBanner show={HAS_IN_MEMORY_TABLES} message="Data Repair fixes blank lookup columns in Dataverse by setting the correct IDs and can re-link SharePoint metadata columns." /><div className="grid gap-4 md:grid-cols-4"><KpiCard title="Tasks needing repair" value={String(tasksNeedingRepair.length)} icon={<ClipboardList className="h-5 w-5" />} /><KpiCard title="Documents needing repair" value={String(documentsWithBlankLookups.length)} icon={<FileText className="h-5 w-5" />} /><KpiCard title="Projects needing repair" value={String(projectsWithBlankManager.length)} icon={<BriefcaseBusiness className="h-5 w-5" />} /><KpiCard title="SharePoint relink candidates" value={String(sharePointRelinkCandidates.length)} icon={<RotateCcw className="h-5 w-5" />} /></div><Card><CardHeader><div className="flex items-center justify-between gap-4"><CardTitle>Repair data consistency</CardTitle><div className="flex gap-2"><Select value={recordType} onValueChange={(value: 'tasks' | 'documents' | 'projects' | 'sharepoint-links') => setRecordType(value)}><SelectTrigger className="w-64"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="tasks">Tasks</SelectItem><SelectItem value="documents">Documents</SelectItem><SelectItem value="projects">Projects</SelectItem><SelectItem value="sharepoint-links">SharePoint Links</SelectItem></SelectContent></Select><Button disabled={isApplying} onClick={() => { void repairSelected(); }}>{isApplying ? 'Applying...' : 'Apply Repairs'}</Button></div></div></CardHeader><CardContent className="p-0">{recordType === 'tasks' && <Table><TableHeader><TableRow><TableHead>Task</TableHead><TableHead>Missing Project?</TableHead><TableHead>Select Project</TableHead><TableHead>Missing Assignee?</TableHead><TableHead>Select Assignee</TableHead></TableRow></TableHeader><TableBody>{tasksNeedingRepair.map((task: Task) => <TableRow key={task.id}><TableCell className="font-medium">{task.name}</TableCell><TableCell>{!task.projectId ? <Badge variant="destructive">Missing</Badge> : <Badge variant="outline">OK</Badge>}</TableCell><TableCell><Select value={selectedRepairs[task.id]?.projectId ?? ''} onValueChange={(value: string) => toggleSelection(task.id, 'projectId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select project..." /></SelectTrigger><SelectContent>{projects.map((p: Project) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent></Select></TableCell><TableCell>{!task.assignedToId ? <Badge variant="destructive">Missing</Badge> : <Badge variant="outline">OK</Badge>}</TableCell><TableCell><Select value={selectedRepairs[task.id]?.assignedToId ?? ''} onValueChange={(value: string) => toggleSelection(task.id, 'assignedToId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select employee..." /></SelectTrigger><SelectContent>{systemUsers.map((u: ManagedUser) => <SelectItem key={u.id} value={u.id}>{u.fullName}</SelectItem>)}</SelectContent></Select></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'documents' && <Table><TableHeader><TableRow><TableHead>Document</TableHead><TableHead>Select Project</TableHead><TableHead>Select Task</TableHead><TableHead>Select Uploaded By</TableHead></TableRow></TableHeader><TableBody>{documentsWithBlankLookups.map((doc: Doc) => <TableRow key={doc.id}><TableCell className="font-medium">{doc.name}</TableCell><TableCell><Select value={selectedRepairs[doc.id]?.projectId ?? ''} onValueChange={(value: string) => toggleSelection(doc.id, 'projectId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select project..." /></SelectTrigger><SelectContent>{projects.map((p: Project) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent></Select></TableCell><TableCell><Select value={selectedRepairs[doc.id]?.taskId ?? ''} onValueChange={(value: string) => toggleSelection(doc.id, 'taskId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select task..." /></SelectTrigger><SelectContent>{tasks.map((t: Task) => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}</SelectContent></Select></TableCell><TableCell><Select value={selectedRepairs[doc.id]?.uploadedById ?? ''} onValueChange={(value: string) => toggleSelection(doc.id, 'uploadedById', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select user..." /></SelectTrigger><SelectContent>{systemUsers.map((u: ManagedUser) => <SelectItem key={u.id} value={u.id}>{u.fullName}</SelectItem>)}</SelectContent></Select></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'projects' && <Table><TableHeader><TableRow><TableHead>Project</TableHead><TableHead>Current Manager</TableHead><TableHead>Select Manager</TableHead></TableRow></TableHeader><TableBody>{projectsWithBlankManager.map((project: Project) => <TableRow key={project.id}><TableCell className="font-medium">{project.name}</TableCell><TableCell>{project.manager || 'Unassigned'}</TableCell><TableCell><Select value={selectedRepairs[project.id]?.managerId ?? ''} onValueChange={(value: string) => toggleSelection(project.id, 'managerId', value)}><SelectTrigger className="w-48"><SelectValue placeholder="Select manager..." /></SelectTrigger><SelectContent>{systemUsers.filter((u: ManagedUser) => u.role === 'Admin' || u.role === 'Project Manager').map((u: ManagedUser) => <SelectItem key={u.id} value={u.id}>{u.fullName}</SelectItem>)}</SelectContent></Select></TableCell></TableRow>)}</TableBody></Table>}{recordType === 'sharepoint-links' && <div className="space-y-4 p-6"><p className="text-sm text-muted-foreground">Re-link SharePoint columns (Project Code + Dataverse Document ID + Status) for files where columns were left blank.</p>{sharePointRepairStats && <div className="rounded-md border p-3 text-sm"><p>Re-linked: <span className="font-medium">{sharePointRepairStats.relinked}</span></p><p>Failed: <span className="font-medium">{sharePointRepairStats.failed}</span></p><p>Skipped: <span className="font-medium">{sharePointRepairStats.skipped}</span></p></div>}<Table><TableHeader><TableRow><TableHead>Document</TableHead><TableHead>Project</TableHead><TableHead>SharePoint URL</TableHead></TableRow></TableHeader><TableBody>{sharePointRelinkCandidates.map((doc: Doc) => <TableRow key={doc.id}><TableCell className="font-medium">{doc.name}</TableCell><TableCell>{doc.project}</TableCell><TableCell className="max-w-[420px] truncate">{doc.url || '—'}</TableCell></TableRow>)}</TableBody></Table></div>}</CardContent></Card></div>;
 }
 
 export default function HomePage() {
@@ -982,6 +1011,43 @@ export default function HomePage() {
       toast.error(message);
     });
   };
+  const relinkSharePointMetadata = async (): Promise<{ relinked: number; failed: number; skipped: number }> => {
+    let relinked = 0;
+    let failed = 0;
+    let skipped = 0;
+    const candidates = allDocuments.filter((doc: Doc) => doc.name && doc.url && doc.url.includes('sharepoint.com'));
+    for (const doc of candidates) {
+      const project = allProjects.find((item: Project) => normalizeGuid(item.id) === normalizeGuid(doc.projectId)) ?? allProjects.find((item: Project) => isSamePerson(item.name, doc.project));
+      const projectCode = project?.code?.trim() ?? '';
+      if (!projectCode) {
+        skipped++;
+        continue;
+      }
+      const uploader = systemUsers.find((user: ManagedUser) => isSamePerson(user.fullName, doc.uploadedBy) || isSamePerson(user.email, doc.uploadedBy));
+      try {
+        const resolved = await SharePointUploadService.resolveFileForRepair(doc.name, doc.url);
+        await SharePointUploadService.updateFileMetadata(resolved.itemId, {
+          title: doc.name,
+          description: doc.comments,
+          taskReference: doc.taskId || doc.task,
+          documentType: 'Other',
+          documentStatus: 'Submitted',
+          projectCode,
+          dataverseDocumentId: doc.id,
+          remarks: doc.comments,
+          uploadedByEmail: uploader?.email || undefined,
+        });
+        console.log('[CTS DEBUG] sharepoint relink', { fileName: doc.name, createResponseKeys: resolved.createResponseKeys, resolvedFileId: resolved.fileId, resolvedFileUrl: resolved.fileUrl, savedDocId: doc.id, projectCode, spUpdateStatus: 'updated', lookupResponseKeys: resolved.lookupResponseKeys });
+        relinked++;
+      } catch (error) {
+        failed++;
+        const message = error instanceof Error && error.message ? error.message : 'Unknown relink failure';
+        console.error('[CTS DEBUG] sharepoint relink failed', { fileName: doc.name, savedDocId: doc.id, projectCode, message });
+      }
+    }
+    refetchAllRecords();
+    return { relinked, failed, skipped };
+  };
   const reactivateProjectCascade = (project: Project) => {
     if (currentUserAccess.role !== 'Admin') { toast.error('Only admins can reactivate inactive projects'); return; }
     const confirmed = window.confirm('This will restore this project along with its tasks and documents. Continue?');
@@ -1036,9 +1102,9 @@ export default function HomePage() {
     if (screen === 'Upload Document') return <UploadDocument projects={scopedProjects} tasks={scopedTasks} systemUsers={systemUsers} prefillTask={uploadPrefillTask} currentAccessUser={currentAccessUser} role={currentAccessUser?.role} onCreate={saveDocument} />;
     if (screen === 'Approval Center') return <ApprovalCenter documents={scopedDocuments} approvals={activeApprovals} role={currentAccessUser?.role} currentAccessUser={currentAccessUser} onDecision={decideDocument} />;
     if (screen === 'Inactive Records') return <InactiveRecordsScreen projects={allProjects} tasks={allTasks} documents={allDocuments} approvals={allApprovals} onRestore={restoreRecord} />;
-    if (screen === 'Data Repair') return <DataRepairScreen projects={allProjects} tasks={allTasks} documents={allDocuments} systemUsers={systemUsers} onRepairTask={repairTask} onRepairDocument={repairDocument} onRepairProject={repairProject} />;
+    if (screen === 'Data Repair') return <DataRepairScreen projects={allProjects} tasks={allTasks} documents={allDocuments} systemUsers={systemUsers} onRepairTask={repairTask} onRepairDocument={repairDocument} onRepairProject={repairProject} onRelinkSharePoint={relinkSharePointMetadata} />;
     return <AccessManagement role={currentAccessUser?.role} currentAccessUser={currentAccessUser} />;
-  }, [screen, dashboardProjects, dashboardTasks, dashboardDocuments, scopedAllProjects, scopedProjects, scopedTasks, scopedDocuments, activeTasks, activeDocuments, activeApprovals, allProjects, allTasks, allDocuments, allApprovals, inactiveRecordCount, systemUsers, uploadPrefillTask, selectedWorkspaceProjectId, dialog?.mode, currentUserAccess.role, currentUserAccess.permissions, currentAccessUser]);
+  }, [screen, dashboardProjects, dashboardTasks, dashboardDocuments, scopedAllProjects, scopedProjects, scopedTasks, scopedDocuments, activeTasks, activeDocuments, activeApprovals, allProjects, allTasks, allDocuments, allApprovals, inactiveRecordCount, systemUsers, uploadPrefillTask, selectedWorkspaceProjectId, dialog?.mode, currentUserAccess.role, currentUserAccess.permissions, currentAccessUser, relinkSharePointMetadata]);
   const deleteSummary = deleteTarget?.type === 'project' ? getProjectDeleteDependencies(deleteTarget) : undefined;
   return <div className="bg-background"><AppHeader screen={screen} setScreen={setScreen} availableScreens={availableScreens} userName={currentUserAccess.fullName ?? currentAccessUser?.fullName} userRole={currentAccessUser?.role} /><main className="p-6"><div className="mx-auto max-w-7xl space-y-5"><div><h1 className="text-2xl font-semibold tracking-tight">{screen}</h1><p className="text-muted-foreground">Dataverse-optimized construction delivery workspace with generated-hook lists, validation, and role-based project access.</p></div>{screen === 'Project Workspace' && <GlobalProjectWorkspacePicker projects={scopedProjects} role={currentAccessUser?.role} selectedProjectId={selectedWorkspaceProjectId} onOpenProject={(project: Project) => setSelectedWorkspaceProjectId(project.id)} />}{content}</div></main><Dialog open={dialog !== null} onOpenChange={(open: boolean) => { if (!open) closeDialog(); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">{dialog?.type === 'project' && <ProjectForm mode={dialog.mode} item={dialog.item} systemUsers={systemUsers} onCancel={closeDialog} onSave={saveProject} />}{dialog?.type === 'task' && <TaskForm mode={dialog.mode} item={dialog.item} projects={scopedProjects} systemUsers={systemUsers} onCancel={closeDialog} onSave={saveTask} />}{dialog?.type === 'document' && <DocumentForm mode={dialog.mode} item={dialog.item} projects={scopedProjects} tasks={scopedTasks} onCancel={closeDialog} onSave={saveDocument} />}</DialogContent></Dialog><AlertDialog open={deleteTarget !== null} onOpenChange={(open: boolean) => { if (!open) { setDeleteTarget(null); setReassignProjectId(''); } }}><AlertDialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl"><AlertDialogHeader><AlertDialogTitle>{deleteTarget?.type === 'project' ? 'Archive project' : 'Archive record'}</AlertDialogTitle><AlertDialogDescription>{deleteTarget?.type === 'project' && deleteSummary ? `This will archive this project along with ${deleteSummary.relatedTasks.length} ${deleteSummary.relatedTasks.length === 1 ? 'Task' : 'Tasks'} and ${deleteSummary.relatedDocuments.length} ${deleteSummary.relatedDocuments.length === 1 ? 'Document' : 'Documents'}. They will be hidden from all views but the data will be preserved. Continue?` : `Hide ${deleteTarget?.name}? This sets Status to Archived instead of physically deleting the record.`}</AlertDialogDescription></AlertDialogHeader>{deleteTarget?.type === 'project' && deleteSummary && <div className="rounded-lg border bg-card p-4 text-card-foreground"><p className="font-medium">Deactivate project and related records</p><p className="mt-2 text-sm text-muted-foreground">The project cascade archives tasks first, documents second, and the project last. Approval records remain unchanged as historical records. Reassign records only moves tasks to another project and does not change Status on any record.</p></div>}{deleteTarget?.type === 'project' && <div className="space-y-2"><Label>Reassign related tasks to</Label><Select value={reassignProjectId} onValueChange={setReassignProjectId}><SelectTrigger className="w-56"><SelectValue placeholder="Choose project" /></SelectTrigger><SelectContent>{projects.filter((project: Project) => project.id && project.id !== deleteTarget.id).map((project: Project) => <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>)}</SelectContent></Select></div>}<AlertDialogFooter className="grid gap-2 sm:grid-cols-2"><AlertDialogCancel className="w-full">Cancel</AlertDialogCancel>{deleteTarget?.type === 'project' && <Button variant="outline" className="w-full whitespace-normal text-wrap" onClick={reassignProjectRecords}>Reassign records</Button>}{deleteTarget?.type === 'project' && <Button variant="destructive" className="w-full whitespace-normal text-wrap" onClick={bulkDeleteProjectCleanup}><Archive className="h-4 w-4 shrink-0" /> Deactivate project and related records</Button>}{deleteTarget?.type !== 'project' && <AlertDialogAction onClick={confirmDelete}>Soft delete only</AlertDialogAction>}</AlertDialogFooter></AlertDialogContent></AlertDialog></div>;
 }

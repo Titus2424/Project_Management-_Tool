@@ -23,6 +23,8 @@ export interface SharePointUploadResult {
   fileName: string;
   fileUrl: string;
   path?: string;
+  createResponseKeys: string[];
+  lookupResponseKeys: string[];
 }
 
 export interface DocumentUploadResult {
@@ -111,6 +113,8 @@ export interface CreateFileResponse {
   Path?: string;
   FileLocator?: string;
   "{Link}"?: string;
+  "{Identifier}"?: string;
+  UniqueId?: string;
 }
 
 export interface Office365UserProfile {
@@ -131,7 +135,7 @@ export type PowerAppsConnectionConfigMap =
 
 export interface PluginHttpRequest {
   url: string;
-  method: "POST";
+  method: "POST" | "GET";
   requestSource: "PublishedApp";
   allowSessionStorage: boolean;
   returnDirectResponse: boolean;
